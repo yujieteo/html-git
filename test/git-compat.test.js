@@ -266,8 +266,14 @@ test('works on repositories created and packed by real git', async () => {
   fsck(dir);
   git(dir, 'gc', '-q');
   fsck(dir);
-  st = await new G.Repo(new NodeFS(dir)).status();
+  const fresh = new G.Repo(new NodeFS(dir));
+  st = await fresh.status();
   assert.deepEqual(st.entries, []);
+  // Abbreviated ids and ~ / ^ are resolved from packed objects too.
+  const headSha = git(dir, 'rev-parse', 'HEAD').trim();
+  assert.equal(await fresh.resolveRev(headSha.slice(0, 8)), headSha);
+  assert.equal(await fresh.resolveRev(headSha.slice(0, 8) + '^2'), git(dir, 'rev-parse', 'HEAD^2').trim());
+  assert.equal((await fresh.graph()).total, Number(git(dir, 'rev-list', '--all', '--count').trim()));
 });
 
 // Minimal CGI bridge so `git http-backend` serves a bare repository over smart HTTP.
@@ -361,4 +367,213 @@ test('push over smart HTTP to a bare repository served by git http-backend', asy
   } finally {
     server.close();
   }
+});
+
+test('log, rev syntax and the commit graph agree with real git', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  const commitFile = async (p, s, msg) => { write(p, s); await repo.add([p]); return (await repo.commit({ message: msg, ident: ME, date: tick() })).sha; };
+  const a = await commitFile('a.txt', 'a\n', 'A');
+  const b = await commitFile('a.txt', 'a\nb\n', 'B');
+  await repo.createBranch('side', { ident: ME, switchTo: true });
+  await commitFile('s.txt', 's\n', 'S1');
+  await commitFile('s.txt', 's\ns\n', 'S2');
+  await repo.switchBranch('main', { ident: ME });
+  await commitFile('m.txt', 'm\n', 'M1');
+  await repo.merge('side', { ident: ME, date: tick() });
+  await commitFile('m.txt', 'm\nm\n', 'M2');
+  git(dir, 'tag', '-a', 'v1', '-m', 'release', b);
+  git(dir, 'branch', 'old', a);
+
+  for (const rev of ['HEAD', 'HEAD~1', 'HEAD~2', 'HEAD^1^2', 'HEAD~1^2~1', 'main~3', 'v1', 'v1~1', b.slice(0, 7), 'side^']) {
+    assert.equal(await repo.resolveRev(rev), git(dir, 'rev-parse', rev + '^{commit}').trim(), rev);
+  }
+  assert.equal(await repo.resolveRev('HEAD~20'), null);
+  assert.equal(await repo.resolveRev('HEAD^2'), null);
+
+  const log = await repo.log((await repo.head()).sha, 100);
+  assert.deepEqual(log.map((c) => c.sha), git(dir, 'rev-list', '--date-order', 'HEAD').trim().split('\n'));
+
+  const { rows, total } = await repo.graph();
+  const all = git(dir, 'rev-list', '--all').trim().split('\n');
+  assert.equal(total, all.length);
+  assert.deepEqual(rows.map((r) => r.sha).sort(), [...all].sort());
+  const pos = new Map(rows.map((r, i) => [r.sha, i]));
+  for (const r of rows) for (const p of r.parents) assert.ok(pos.get(p) > pos.get(r.sha), 'parents come after children');
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    assert.deepEqual(r.before, i ? rows[i - 1].after : [], 'lanes continue from row to row');
+    assert.ok(r.before[r.col] === r.sha || r.before[r.col] == null || r.col >= r.before.length);
+    for (const p of r.parents) assert.ok(r.after.includes(p), 'every parent has a lane below its child');
+  }
+  assert.deepEqual(rows.at(-1).after, []);
+  assert.deepEqual(rows[0].refs, ['HEAD -> main']);
+  assert.ok(rows.find((r) => r.sha === b).refs.includes('tag: v1'));
+  assert.ok(rows.find((r) => r.sha === a).refs.includes('old'));
+  assert.ok(Math.max(...rows.map((r) => r.after.length)) >= 2, 'the merge shows two lanes');
+});
+
+test('reset --soft, --mixed, --hard and unstaging match real git', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  write('a.txt', 'one\n');
+  write('b.txt', 'bee\n');
+  await repo.add(['a.txt', 'b.txt']);
+  const c1 = await repo.commit({ message: 'one', ident: ME, date: tick() });
+  write('a.txt', 'two\n');
+  write('c.txt', 'new\n');
+  await repo.add(['a.txt', 'c.txt']);
+  const c2 = await repo.commit({ message: 'two', ident: ME, date: tick() });
+
+  let r = await repo.reset('HEAD~1', { mode: 'soft', ident: ME });
+  assert.equal(r.sha, c1.sha);
+  assert.equal(git(dir, 'rev-parse', 'HEAD').trim(), c1.sha);
+  assert.equal(git(dir, 'rev-parse', 'ORIG_HEAD').trim(), c2.sha);
+  assert.equal(git(dir, 'status', '--porcelain'), 'M  a.txt\nA  c.txt\n');
+  assert.match(git(dir, 'reflog', '-1'), /reset: moving to HEAD~1/);
+
+  await repo.reset(c2.sha, { mode: 'soft', ident: ME });
+  await repo.reset('HEAD~1', { mode: 'mixed', ident: ME });
+  assert.equal(git(dir, 'status', '--porcelain'), ' M a.txt\n?? c.txt\n');
+  assert.deepEqual((await repo.status()).entries.map((e) => e.x + e.y + ' ' + e.path), [' M a.txt', '?? c.txt']);
+
+  await repo.add(['a.txt', 'c.txt']);
+  write('b.txt', 'bee edited\n');
+  await repo.add(['b.txt']);
+  const done = await repo.resetPaths(['a.txt', 'c.txt']);
+  assert.deepEqual(done.map((d) => d.action), ['reset', 'untrack']);
+  assert.equal(git(dir, 'status', '--porcelain'), ' M a.txt\nM  b.txt\n?? c.txt\n');
+
+  write('d.txt', 'untracked survives\n');
+  await repo.reset(c2.sha, { mode: 'hard', ident: ME });
+  assert.equal(git(dir, 'rev-parse', 'HEAD').trim(), c2.sha);
+  assert.equal(git(dir, 'status', '--porcelain'), '?? d.txt\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'two\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'b.txt'), 'utf8'), 'bee\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'c.txt'), 'utf8'), 'new\n');
+
+  await repo.reset('HEAD~1', { mode: 'hard', ident: ME });
+  assert.equal(fs.existsSync(path.join(dir, 'c.txt')), false, 'hard reset removes files the target does not track');
+  assert.equal(git(dir, 'status', '--porcelain'), '?? d.txt\n');
+
+  // A hard reset also clears a conflicted merge.
+  await repo.createBranch('x', { ident: ME, switchTo: true });
+  write('a.txt', 'x\n'); await repo.add(['a.txt']); await repo.commit({ message: 'x', ident: ME, date: tick() });
+  await repo.switchBranch('main', { ident: ME });
+  write('a.txt', 'y\n'); await repo.add(['a.txt']); const y = await repo.commit({ message: 'y', ident: ME, date: tick() });
+  assert.equal((await repo.merge('x', { ident: ME, date: tick() })).result, 'conflict');
+  await assert.rejects(repo.reset('HEAD', { mode: 'soft' }), /middle of a merge/);
+  await repo.reset('HEAD', { mode: 'hard', ident: ME });
+  assert.equal(git(dir, 'status', '--porcelain'), '?? d.txt\n');
+  assert.equal(git(dir, 'rev-parse', 'HEAD').trim(), y.sha);
+  assert.equal(fs.existsSync(path.join(dir, '.git/MERGE_HEAD')), false);
+  fsck(dir);
+});
+
+test('rebase: clean replay, conflicts with continue/skip/abort, and state real git understands', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  const commitFile = async (p, s, msg) => { write(p, s); await repo.add([p]); return (await repo.commit({ message: msg, ident: ME, date: tick() })).sha; };
+  await commitFile('f.txt', '1\n2\n3\n4\n5\n', 'base');
+  await repo.createBranch('topic', { ident: ME, switchTo: true });
+  const t1 = await commitFile('f.txt', '1\n2\n3\n4\nfive\n', 'topic edits line 5');
+  await commitFile('t.txt', 'topic\n', 'topic adds t.txt');
+  await repo.switchBranch('main', { ident: ME });
+  const m1 = await commitFile('f.txt', 'one\n2\n3\n4\n5\n', 'main edits line 1');
+  await commitFile('same.txt', 'x\n', 'main adds same.txt');
+
+  // Up to date / fast-forward.
+  assert.equal((await repo.rebase('main~1', { ident: ME, date: tick() })).result, 'up-to-date');
+  git(dir, 'branch', 'behind', 'main~2');
+  await repo.switchBranch('behind', { ident: ME });
+  let r = await repo.rebase('main', { ident: ME, date: tick() });
+  assert.equal(r.result, 'fast-forward');
+  assert.equal(git(dir, 'rev-parse', 'behind').trim(), git(dir, 'rev-parse', 'main').trim());
+
+  // Clean rebase of topic onto main; authors are kept, committer is the rebaser.
+  await repo.switchBranch('topic', { ident: ME });
+  const origTopic = git(dir, 'rev-parse', 'topic').trim();
+  r = await repo.rebase('main', { ident: { name: 'Rebaser', email: 'r@example.com' }, date: tick() });
+  assert.equal(r.result, 'rebased');
+  assert.equal(r.picked.length, 2);
+  assert.equal(git(dir, 'symbolic-ref', 'HEAD').trim(), 'refs/heads/topic');
+  assert.equal(git(dir, 'rev-list', '--count', 'main..topic').trim(), '2');
+  assert.equal(git(dir, 'merge-base', 'main', 'topic').trim(), git(dir, 'rev-parse', 'main').trim());
+  assert.equal(git(dir, 'log', '--format=%s|%an|%cn', 'main..topic'), 'topic adds t.txt|Ada Lovelace|Rebaser\ntopic edits line 5|Ada Lovelace|Rebaser\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'f.txt'), 'utf8'), 'one\n2\n3\n4\nfive\n');
+  assert.equal(git(dir, 'status', '--porcelain'), '');
+  assert.equal(git(dir, 'rev-parse', 'ORIG_HEAD').trim(), origTopic);
+  assert.match(git(dir, 'reflog', '-1', 'topic'), /rebase \(finish\): refs\/heads\/topic onto/);
+  assert.equal(fs.existsSync(path.join(dir, '.git/rebase-merge')), false);
+  fsck(dir);
+
+  // A commit whose change is already upstream is dropped.
+  await repo.reset(origTopic, { mode: 'hard' });
+  await repo.switchBranch('main', { ident: ME });
+  write('f.txt', 'one\n2\n3\n4\nfive\n'); await repo.add(['f.txt']);
+  await repo.commit({ message: 'main cherry-picks line 5', ident: ME, date: tick() });
+  await repo.switchBranch('topic', { ident: ME });
+  r = await repo.rebase('main', { ident: ME, date: tick() });
+  assert.equal(r.result, 'rebased');
+  assert.deepEqual(r.dropped, [t1]);
+  assert.equal(git(dir, 'rev-list', '--count', 'main..topic').trim(), '1');
+
+  // Conflicts: stop, leave state git understands, resolve, continue.
+  await repo.reset(origTopic, { mode: 'hard' });
+  await repo.switchBranch('main', { ident: ME });
+  await repo.reset(m1, { mode: 'hard' });
+  await commitFile('f.txt', 'one\n2\n3\n4\nFIVE\n', 'main edits line 5');
+  const mainTip = git(dir, 'rev-parse', 'main').trim();
+  await repo.switchBranch('topic', { ident: ME });
+  r = await repo.rebase('main', { ident: ME, date: tick() });
+  assert.equal(r.result, 'conflict');
+  assert.equal(r.stopped, t1);
+  assert.deepEqual(r.conflicts, [{ path: 'f.txt', reason: 'content' }]);
+  assert.equal(fs.readFileSync(path.join(dir, 'f.txt'), 'utf8'), `one\n2\n3\n4\n<<<<<<< HEAD\nFIVE\n=======\nfive\n>>>>>>> ${t1.slice(0, 7)} (topic edits line 5)\n`);
+  assert.equal(git(dir, 'status', '--porcelain'), 'UU f.txt\n');
+  assert.match(git(dir, 'status'), /rebasing branch 'topic' on '[0-9a-f]{7}'/);
+  assert.equal(git(dir, 'rev-parse', 'HEAD').trim(), mainTip);
+  assert.equal(git(dir, 'rev-parse', 'REBASE_HEAD').trim(), t1);
+  assert.equal((await repo.status()).rebasing.stopped, t1);
+  await assert.rejects(repo.merge('main', { ident: ME }), /rebase is in progress/);
+  await assert.rejects(repo.continueRebase({ ident: ME }), /unmerged/);
+  write('f.txt', 'one\n2\n3\n4\nFIVE and five\n');
+  await repo.add(['f.txt']);
+  r = await repo.continueRebase({ ident: ME, date: tick() });
+  assert.equal(r.result, 'rebased');
+  assert.equal(git(dir, 'log', '--format=%s', 'main..topic'), 'topic adds t.txt\ntopic edits line 5\n');
+  assert.equal(git(dir, 'show', 'topic~1:f.txt'), 'one\n2\n3\n4\nFIVE and five\n');
+  assert.equal(git(dir, 'status', '--porcelain'), '');
+  assert.equal(git(dir, 'symbolic-ref', '--short', 'HEAD').trim(), 'topic');
+  fsck(dir);
+
+  // Skip drops the conflicting commit and carries on.
+  await repo.reset(origTopic, { mode: 'hard' });
+  assert.equal((await repo.rebase('main', { ident: ME, date: tick() })).result, 'conflict');
+  r = await repo.skipRebase({ ident: ME, date: tick() });
+  assert.equal(r.result, 'rebased');
+  assert.equal(git(dir, 'log', '--format=%s', 'main..topic'), 'topic adds t.txt\n');
+  assert.equal(git(dir, 'status', '--porcelain'), '');
+
+  // Abort puts everything back.
+  await repo.reset(origTopic, { mode: 'hard' });
+  assert.equal((await repo.rebase('main', { ident: ME, date: tick() })).result, 'conflict');
+  await repo.abortRebase({ ident: ME });
+  assert.equal(git(dir, 'symbolic-ref', 'HEAD').trim(), 'refs/heads/topic');
+  assert.equal(git(dir, 'rev-parse', 'HEAD').trim(), origTopic);
+  assert.equal(git(dir, 'status', '--porcelain'), '');
+  assert.equal(fs.existsSync(path.join(dir, '.git/rebase-merge')), false);
+
+  // Real git can abort and continue a rebase html-git stopped.
+  assert.equal((await repo.rebase('main', { ident: ME, date: tick() })).result, 'conflict');
+  git(dir, 'rebase', '--abort');
+  assert.equal(git(dir, 'rev-parse', 'HEAD').trim(), origTopic);
+  assert.equal(git(dir, 'status', '--porcelain'), '');
+  assert.equal((await repo.rebase('main', { ident: ME, date: tick() })).result, 'conflict');
+  write('f.txt', 'resolved by git\n');
+  git(dir, 'add', 'f.txt');
+  execFileSync('git', ['rebase', '--continue'], { cwd: dir, env: { ...gitEnv, GIT_EDITOR: 'true' }, stdio: 'ignore' });
+  assert.equal(git(dir, 'log', '--format=%s|%an', 'main..topic'), 'topic adds t.txt|Ada Lovelace\ntopic edits line 5|Ada Lovelace\n');
+  assert.equal(git(dir, 'symbolic-ref', '--short', 'HEAD').trim(), 'topic');
+  fsck(dir);
 });
