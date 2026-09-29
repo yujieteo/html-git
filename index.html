@@ -127,6 +127,14 @@ ul.plain li .name { font-family: var(--mono); overflow-wrap: anywhere; min-width
 .graph .gtext { overflow: hidden; text-overflow: ellipsis; min-width: 0; padding-left: 6px; }
 .graph .gtext .mono { color: var(--muted); margin-right: 6px; }
 .graph .gtext .meta { color: var(--muted); font-size: 12px; margin-left: 6px; }
+pre.diff { margin: 0; padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 70vh; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; }
+pre.diff span { display: block; white-space: pre; min-width: max-content; }
+pre.diff .d-add { color: var(--add); background: color-mix(in srgb, var(--add) 10%, transparent); }
+pre.diff .d-del { color: var(--del); background: color-mix(in srgb, var(--del) 10%, transparent); }
+pre.diff .d-hunk { color: var(--g1); }
+pre.diff .d-file { font-weight: 700; margin-top: 10px; }
+pre.diff .d-file:first-child { margin-top: 0; }
+pre.diff .d-meta { color: var(--muted); }
 fieldset.modes { border: 1px solid var(--border); border-radius: 6px; margin: 0; padding: 8px 12px; display: grid; gap: 6px; }
 fieldset.modes legend { font-size: 12px; font-weight: 600; color: var(--muted); padding: 0 4px; }
 fieldset.modes label { display: flex; gap: 8px; align-items: baseline; }
@@ -139,7 +147,7 @@ fieldset.modes small { color: var(--muted); }
 <body>
 <header class="top">
   <div class="brand">html<span>-git</span></div>
-  <div class="tagline">git init · add · commit · log · branch · merge · rebase · reset · push — in one HTML file, no libraries</div>
+  <div class="tagline">git init · add · commit · diff · stash · log · branch · merge · rebase · reset · push — in one HTML file, no libraries</div>
   <div class="spacer"></div>
   <span class="folder" id="folderName"></span>
   <button class="primary" id="openBtn">Open folder…</button>
@@ -155,7 +163,7 @@ fieldset.modes small { color: var(--muted); }
   <p>Pick a folder on your disk. html-git reads and writes its real <code>.git</code> directory, so everything it does can be
     inspected, continued or undone with ordinary command-line git.</p>
   <p>Supported: <b>init</b>, <b>add</b>, <b>commit -m</b>, <b>branch</b> (create / list / switch), <b>merge</b> (fast-forward and three-way),
-    <b>rebase</b>, <b>reset</b> (soft / mixed / hard, and unstaging), <b>log</b>, a commit <b>tree</b> graph of all branches and <b>push</b> (smart HTTP). Works from <code>file://</code> in desktop Chrome, Edge and other Chromium browsers.</p>
+    <b>diff</b>, <b>stash</b>, <b>rebase</b>, <b>reset</b> (soft / mixed / hard, and unstaging), <b>log</b>, a commit <b>tree</b> graph of all branches and <b>push</b> (smart HTTP). Works from <code>file://</code> in desktop Chrome, Edge and other Chromium browsers.</p>
   <div class="row"><button class="primary" id="openBtn2">Open folder…</button></div>
 </section>
 
@@ -175,6 +183,8 @@ fieldset.modes small { color: var(--muted); }
       <button role="tab" data-tab="init"><span class="cmd">init</span></button>
       <button role="tab" data-tab="add"><span class="cmd">add</span></button>
       <button role="tab" data-tab="commit"><span class="cmd">commit</span></button>
+      <button role="tab" data-tab="diff"><span class="cmd">diff</span></button>
+      <button role="tab" data-tab="stash"><span class="cmd">stash</span></button>
       <button role="tab" data-tab="log"><span class="cmd">log</span></button>
       <button role="tab" data-tab="tree"><span class="cmd">tree</span></button>
       <button role="tab" data-tab="branch"><span class="cmd">branch</span></button>
@@ -219,6 +229,39 @@ fieldset.modes small { color: var(--muted); }
       </div>
       <label class="field"><span>Commit message (-m)</span><textarea id="commitMsg" placeholder="Describe your change"></textarea></label>
       <div class="row"><button class="primary" id="commitBtn">git commit</button></div>
+    </section>
+
+    <section class="panel" data-panel="diff" hidden>
+      <p>Show changes as a unified diff (<code>git diff</code>).</p>
+      <div class="row">
+        <select id="diffMode" style="flex:1; min-width:200px">
+          <option value="unstaged">unstaged changes: index → files (git diff)</option>
+          <option value="staged">staged changes: HEAD → index (git diff --cached)</option>
+          <option value="head">all changes: HEAD → files (git diff HEAD)</option>
+          <option value="commits">between two commits (git diff A B)</option>
+        </select>
+        <button id="diffRefresh" class="small">Refresh</button>
+      </div>
+      <div class="grid2" id="diffRevs" hidden>
+        <label class="field"><span>From (A)</span><input type="text" id="diffA" value="HEAD~1" spellcheck="false"></label>
+        <label class="field"><span>To (B)</span><input type="text" id="diffB" value="HEAD" spellcheck="false"></label>
+      </div>
+      <div id="diffSummary"></div>
+      <pre class="diff" id="diffOut" hidden></pre>
+    </section>
+
+    <section class="panel" data-panel="stash" hidden>
+      <p>Put uncommitted changes to tracked files aside and get a clean working tree (<code>git stash</code>). Untracked files stay where they are.
+        Stashes are stored like real git stores them, so <code>git stash list</code> sees them too.</p>
+      <div class="row">
+        <input type="text" id="stashMsg" placeholder="message (optional)" style="flex:1; min-width:160px">
+        <button class="primary" id="stashBtn">git stash</button>
+      </div>
+      <h3>Stashes</h3>
+      <ul class="plain" id="stashList"></ul>
+      <p class="notice">You can apply a stash while you have other changes, as long as the stash does not touch those files.
+        New files come back staged, other changes come back unstaged.
+        If applying conflicts, the stash is kept: resolve the files, then add them.</p>
     </section>
 
     <section class="panel" data-panel="log" hidden>
@@ -948,6 +991,66 @@ const GitCore = (() => {
     }
     return { conflicts, text: out.join('') };
   }
+  // Hunks of a unified diff between two texts, in git's default shape: 3 lines of
+  // context, changes at most 6 unchanged lines apart share a hunk, and the header
+  // carries the nearest preceding line that starts with a letter, '_' or '$'.
+  function diffHunks(aText, bText, context = 3) {
+    const a = splitLines(aText), b = splitLines(bText);
+    const match = lcsMatch(a, b);
+    const ops = [];
+    let j = 0;
+    for (let i = 0; i < a.length; i++) {
+      if (match[i] < 0) { ops.push({ t: '-', ai: i, bi: j }); continue; }
+      while (j < match[i]) ops.push({ t: '+', ai: i, bi: j++ });
+      ops.push({ t: ' ', ai: i, bi: j++ });
+    }
+    while (j < b.length) ops.push({ t: '+', ai: a.length, bi: j++ });
+    const changes = [];
+    ops.forEach((op, k) => { if (op.t !== ' ') changes.push(k); });
+    const groups = [];
+    for (const k of changes) {
+      const g = groups[groups.length - 1];
+      if (g && k - g[1] - 1 <= 2 * context) g[1] = k; else groups.push([k, k]);
+    }
+    const count = (n, s) => (n === 1 ? `${s}` : `${s},${n}`);
+    const hunks = [];
+    for (const [first, last] of groups) {
+      const lo = Math.max(0, first - context), hi = Math.min(ops.length, last + context + 1);
+      const slice = ops.slice(lo, hi);
+      const na = slice.filter((o) => o.t !== '+').length, nb = slice.filter((o) => o.t !== '-').length;
+      const sa = ops[lo].ai, sb = ops[lo].bi;
+      let func = '';
+      for (let i = sa - 1; i >= 0; i--) {
+        if (/^[A-Za-z_$]/.test(a[i])) { func = a[i].replace(/\n$/, '').slice(0, 80).replace(/\s+$/, ''); break; }
+      }
+      let text = `@@ -${count(na, na ? sa + 1 : sa)} +${count(nb, nb ? sb + 1 : sb)} @@${func ? ' ' + func : ''}\n`;
+      for (const o of slice) {
+        const line = o.t === '+' ? b[o.bi] : a[o.ai];
+        text += o.t + line + (line.endsWith('\n') ? '' : '\n\\ No newline at end of file\n');
+      }
+      hunks.push(text);
+    }
+    return hunks;
+  }
+  // One file's section of `git diff` output. old/neu: { mode, sha, data } or null.
+  function filePatch(path, old, neu) {
+    const ab = (s) => s.slice(0, 7);
+    let out = `diff --git a/${path} b/${path}\n`;
+    const m = (e) => modeString(e.mode).padStart(6, '0');
+    if (!old) out += `new file mode ${m(neu)}\nindex 0000000..${ab(neu.sha)}\n`;
+    else if (!neu) out += `deleted file mode ${m(old)}\nindex ${ab(old.sha)}..0000000\n`;
+    else {
+      if (old.mode !== neu.mode) out += `old mode ${m(old)}\nnew mode ${m(neu)}\n`;
+      if (old.sha !== neu.sha) out += `index ${ab(old.sha)}..${ab(neu.sha)}${old.mode === neu.mode ? ' ' + m(neu) : ''}\n`;
+    }
+    if (old && neu && old.sha === neu.sha) return out;
+    const od = old ? old.data : new Uint8Array(0), nd = neu ? neu.data : new Uint8Array(0);
+    if (looksBinary(od) || looksBinary(nd)) return out + `Binary files ${old ? 'a/' + path : '/dev/null'} and ${neu ? 'b/' + path : '/dev/null'} differ\n`;
+    const hunks = diffHunks(dec(od), dec(nd));
+    if (!hunks.length) return out;
+    return out + `--- ${old ? 'a/' + path : '/dev/null'}\n+++ ${neu ? 'b/' + path : '/dev/null'}\n` + hunks.join('');
+  }
+
   function looksBinary(bytes) {
     const n = Math.min(bytes.length, 8000);
     for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
@@ -1139,6 +1242,8 @@ const GitCore = (() => {
         return sha;
       }
       let sha = isSha(rev) ? rev : null;
+      const stash = /^stash@\{(\d+)\}$/.exec(rev);
+      if (stash) { const e = (await this.stashList()).find((x) => x.index === Number(stash[1])); return e ? e.sha : null; }
       for (const r of [rev, `refs/heads/${rev}`, `refs/tags/${rev}`, `refs/remotes/${rev}`]) {
         if (sha || !rev || rev.startsWith('/')) break;
         sha = await this.resolveRef(r);
@@ -1653,6 +1758,154 @@ const GitCore = (() => {
       return done;
     }
 
+    // --- diff ---
+    // A side of a diff: 'index', 'worktree' or a revision. Returns path -> {mode, sha, file?}.
+    async diffSide(side, trackedPaths) {
+      if (side !== 'index' && side !== 'worktree') {
+        const sha = await this.resolveRev(side);
+        if (!sha && side === 'HEAD' && !(await this.head()).sha) return new Map();
+        if (!sha) throw new Error(`'${side}' does not name a commit`);
+        return this.commitMap(sha);
+      }
+      const out = new Map(), unmerged = new Set();
+      for (const e of await this.readIndex()) {
+        if (e.stage) { unmerged.add(e.path); continue; }
+        out.set(e.path, e);
+      }
+      if (side === 'index') { for (const p of unmerged) out.delete(p); return { map: out, unmerged }; }
+      const map = new Map();
+      for (const p of new Set([...out.keys(), ...unmerged, ...trackedPaths])) {
+        const st = await this.fs.stat(p);
+        if (!st || st.kind !== 'file') continue;
+        const i = out.get(p);
+        const sha = i && statMatches(i, st) ? i.sha : null;
+        map.set(p, { mode: i ? i.mode : MODE.FILE, sha, file: true });
+      }
+      return { map, unmerged };
+    }
+    // `git diff` (index -> worktree), `git diff --cached` (HEAD -> index),
+    // `git diff HEAD` (HEAD -> worktree) and `git diff A B` (commit -> commit).
+    async diff({ from = 'index', to = 'worktree' } = {}) {
+      const norm = async (side, tracked) => {
+        const r = await this.diffSide(side, tracked);
+        return r instanceof Map ? { map: r, unmerged: new Set() } : r;
+      };
+      const a = await norm(from, []);
+      const b = await norm(to, from === 'index' ? [] : [...a.map.keys()]);
+      const unmerged = new Set([...a.unmerged, ...b.unmerged]);
+      const files = [];
+      const paths = [...new Set([...a.map.keys(), ...b.map.keys(), ...unmerged])].sort(comparePaths);
+      const load = async (p, e) => {
+        if (!e) return null;
+        if (!e.file) return { mode: e.mode, sha: e.sha, data: e.mode === MODE.GITLINK ? enc(`Subproject commit ${e.sha}\n`) : await this.readTyped(e.sha, 'blob') };
+        const data = await this.fs.readFile(p);
+        return { mode: e.mode, sha: e.sha || hashObject('blob', data), data };
+      };
+      for (const p of paths) {
+        if (unmerged.has(p)) { files.push({ path: p, status: 'U', patch: `* Unmerged path ${p}\n` }); continue; }
+        const x = a.map.get(p), y = b.map.get(p);
+        if (x && y && y.sha && x.sha === y.sha && x.mode === y.mode) continue;
+        const old = await load(p, x), neu = await load(p, y);
+        if (old && neu && old.sha === neu.sha && old.mode === neu.mode) continue;
+        files.push({ path: p, status: !old ? 'A' : !neu ? 'D' : 'M', patch: filePatch(p, old, neu) });
+      }
+      return { files, text: files.map((f) => f.patch).join('') };
+    }
+
+    // --- stash (refs/stash; entries are its reflog, like real git) ---
+    async stashList() {
+      const t = (await this.readText('.git/logs/refs/stash')) || '';
+      const lines = t.split('\n').filter(Boolean);
+      return lines.map((l, i) => {
+        const tab = l.indexOf('\t');
+        return { index: lines.length - 1 - i, sha: l.split(' ')[1], message: tab >= 0 ? l.slice(tab + 1) : '', time: parseIdent(l.slice(82, tab)).time };
+      }).reverse();
+    }
+    async stashPush({ message, ident, date } = {}) {
+      const st = await this.status();
+      if (st.merging || st.rebasing || st.entries.some((e) => e.x === 'U')) throw new Error('cannot stash: a merge or rebase is in progress');
+      const head = st.head;
+      if (!head.sha) throw new Error('you do not have the initial commit yet');
+      if (!this.dirtyTracked(st).length) return { result: 'no-changes' };
+      const identLine = makeIdent(ident, date);
+      const c = await this.readCommit(head.sha);
+      const where = head.branch || '(no branch)';
+      const base = `${where}: ${head.sha.slice(0, 7)} ${c.message.split('\n')[0]}`;
+      const map = new Map();
+      for (const e of await this.readIndex()) if (!e.stage) map.set(e.path, { mode: e.mode, sha: e.sha });
+      const i = await this.writeCommit({ tree: await this.writeTreeFromMap(map), parents: [head.sha], identLine, message: `index on ${base}\n` });
+      const work = new Map(map);
+      for (const e of st.entries) {
+        if (e.y === 'D') work.delete(e.path);
+        else if (e.y === 'M') work.set(e.path, { mode: map.get(e.path).mode, sha: await this.writeObject('blob', await this.fs.readFile(e.path)) });
+      }
+      const msg = (message || '').trim().split('\n')[0] ? `On ${where}: ${message.trim().split('\n')[0]}` : `WIP on ${base}`;
+      const w = await this.writeCommit({ tree: await this.writeTreeFromMap(work), parents: [head.sha, i], identLine, message: msg + '\n' });
+      await this.updateRef('refs/stash', w, await this.resolveRef('refs/stash'), identLine, msg, false);
+      await this.forceWorktree(await this.commitMap(head.sha));
+      return { result: 'saved', sha: w, message: msg };
+    }
+    async stashApply(n = 0, { pop = false } = {}) {
+      const entry = (await this.stashList()).find((e) => e.index === n);
+      if (!entry) throw new Error(`stash@{${n}} does not exist`);
+      const status = await this.status();
+      if (status.merging || status.rebasing || status.entries.some((e) => e.x === 'U')) throw new Error('cannot apply a stash: a merge or rebase is in progress');
+      const head = status.head;
+      const w = await this.readCommit(entry.sha);
+      const oursMap = await this.commitMap(head.sha);
+      const m = await this.mergeMaps(await this.commitMap(w.parents[0]), oursMap, await this.commitMap(entry.sha), 'Updated upstream', 'Stashed changes');
+      // Like git, local changes are fine as long as the stash does not touch those files.
+      const same = (x, y) => (!x && !y) || (!!x && !!y && x.sha === y.sha && x.mode === y.mode);
+      const touched = new Set([...new Set([...oursMap.keys(), ...m.workMap.keys()])].filter((p) => !same(oursMap.get(p), m.workMap.get(p))));
+      for (const c of m.conflicts) touched.add(c.path);
+      const dirty = this.dirtyTracked(status).map((e) => e.path).filter((p) => touched.has(p));
+      if (dirty.length) throw new Error(`cannot apply a stash: your local changes to these files would be overwritten:\n  ${dirty.join('\n  ')}\nCommit or stash them first.`);
+      await this.checkOverwrite(oursMap, m.workMap, status);
+      const only = (map) => new Map([...map].filter(([p]) => touched.has(p)));
+      await this.applyTreeChange(only(oursMap), only(m.workMap));
+      const index = (await this.readIndex()).filter((e) => !e.stage);
+      if (!m.conflicts.length) {
+        // New files come back staged, other changes come back unstaged.
+        const have = new Set(index.map((e) => e.path));
+        for (const [p, v] of m.result) if (!oursMap.has(p) && !have.has(p)) index.push(indexEntry(p, v.sha, v.mode, null));
+        await this.writeIndex(index);
+        if (pop) await this.stashDrop(n);
+        return { result: 'applied', dropped: pop, sha: entry.sha };
+      }
+      for (const c of m.conflicts) {
+        const content = c.content || (c.o ? null : await this.readTyped(c.t.sha, 'blob'));
+        if (content) await this.fs.writeFile(c.path, content);
+      }
+      const entries = index.filter((e) => !touched.has(e.path));
+      for (const [p, v] of m.result) if (touched.has(p)) entries.push(indexEntry(p, v.sha, v.mode, await this.fs.stat(p)));
+      for (const c of m.conflicts) {
+        if (c.b) entries.push(indexEntry(c.path, c.b.sha, c.b.mode, null, 1));
+        if (c.o) entries.push(indexEntry(c.path, c.o.sha, c.o.mode, null, 2));
+        if (c.t) entries.push(indexEntry(c.path, c.t.sha, c.t.mode, null, 3));
+      }
+      await this.writeIndex(entries);
+      return { result: 'conflict', conflicts: m.conflicts.map((c) => ({ path: c.path, reason: c.reason })), dropped: false };
+    }
+    async stashDrop(n = 0) {
+      const lines = ((await this.readText('.git/logs/refs/stash')) || '').split('\n').filter(Boolean);
+      const at = lines.length - 1 - n;
+      if (n < 0 || at < 0) throw new Error(`stash@{${n}} does not exist`);
+      const [removed] = lines.splice(at, 1);
+      if (at < lines.length) {
+        // Keep the reflog chain intact (git reflog delete --rewrite).
+        const prev = at > 0 ? lines[at - 1].split(' ')[1] : ZERO_SHA;
+        lines[at] = prev + lines[at].slice(40);
+      }
+      if (lines.length) {
+        await this.fs.writeFile('.git/logs/refs/stash', lines.join('\n') + '\n');
+        await this.fs.writeFile('.git/refs/stash', lines[lines.length - 1].split(' ')[1] + '\n');
+      } else {
+        await this.fs.remove('.git/logs/refs/stash');
+        await this.fs.remove('.git/refs/stash');
+      }
+      return { sha: removed.split(' ')[1] };
+    }
+
     // --- rebase (non-interactive, merge backend; state in .git/rebase-merge like real git) ---
     async rebaseState() {
       const dir = '.git/rebase-merge';
@@ -2036,7 +2289,7 @@ const GitCore = (() => {
   return {
     Repo, sha1, sha1Hex, inflate, deflate, adler32, hashObject, parseIndex, serializeIndex, parseTree, serializeTree,
     parseCommit, merge3, parseIgnore, isIgnored, configGet, configSet, applyDelta, pktLine, parsePktLines,
-    validBranchName, cleanMessage, ZERO_SHA, enc, dec, toHex, fromHex,
+    validBranchName, cleanMessage, diffHunks, filePatch, ZERO_SHA, enc, dec, toHex, fromHex,
   };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
@@ -2180,7 +2433,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
     store.set('tab', tab);
     for (const b of $('tabs').querySelectorAll('button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
     for (const p of document.querySelectorAll('.panel')) p.hidden = p.dataset.panel !== tab;
-    if (state.kind === 'repo' && !state.busy && (tab === 'log' || tab === 'tree')) renderHistoryTab().catch((e) => log(e.message, 'err'));
+    if (state.kind === 'repo' && !state.busy && ['log', 'tree', 'diff'].includes(tab)) renderHistoryTab().catch((e) => log(e.message, 'err'));
   }
   const STATE_TEXT = {
     '??': 'untracked', UU: 'conflict — resolve, then add',
@@ -2309,7 +2562,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
       el('option', { value: '--all' }, 'all branches (--all)'),
       ...state.branches.filter((b) => b.name !== head.branch).map((b) => el('option', { value: 'refs/heads/' + b.name }, b.name)));
     if ([...$('logFrom').options].some((o) => o.value === prevLog)) $('logFrom').value = prevLog;
-    if (state.tab === 'log' || state.tab === 'tree') await renderHistoryTab();
+    if (['log', 'tree', 'diff'].includes(state.tab)) await renderHistoryTab();
+
+    // stash
+    const stashes = await repo.stashList();
+    $('stashList').replaceChildren(...(stashes.length ? stashes.map((e) => el('li', {},
+      el('span', { class: 'name' }, `stash@{${e.index}}`), el('span', {}, e.message), el('span', { class: 'meta' }, relTime(e.time)),
+      el('button', { class: 'small', onclick: () => showDiff(`stash@{${e.index}}^1`, `stash@{${e.index}}`) }, 'show'),
+      el('button', { class: 'small', onclick: () => stashAction('apply', e.index) }, 'apply'),
+      el('button', { class: 'small', onclick: () => stashAction('pop', e.index) }, 'pop'),
+      el('button', { class: 'small', onclick: () => stashAction('drop', e.index) }, 'drop')))
+      : [el('li', { class: 'empty' }, 'no stashes')]));
+    if (stashes.length) info.push(el('dt', {}, 'Stashes'), el('dd', {}, String(stashes.length)));
+    $('repoInfo').replaceChildren(...info);
 
     // push
     const prevPush = $('pushBranch').value;
@@ -2321,6 +2586,29 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
   function refPill(label) {
     const cls = label.startsWith('HEAD') ? 'ref head' : label.startsWith('tag: ') ? 'ref tag' : label.includes('/') && !state.branches.some((b) => b.name === label) ? 'ref remote' : 'ref';
     return el('span', { class: cls }, label);
+  }
+  function showDiff(a, b) {
+    $('diffMode').value = 'commits';
+    $('diffA').value = a;
+    $('diffB').value = b;
+    selectTab('diff');
+  }
+  async function stashAction(action, n) {
+    if (action === 'drop' && !confirm(`Drop stash@{${n}}? Its changes will be lost.`)) return;
+    await run(`git stash ${action} stash@{${n}}`, async () => {
+      if (action === 'drop') {
+        const r = await state.repo.stashDrop(n);
+        log(`Dropped stash@{${n}} (${short(r.sha)})`, 'ok');
+        return;
+      }
+      const r = await state.repo.stashApply(n, { pop: action === 'pop' });
+      if (r.result === 'applied') log(r.dropped ? `Applied and dropped stash@{${n}} (${short(r.sha)})` : `Applied stash@{${n}}`, 'ok');
+      else {
+        for (const c of r.conflicts) log(`CONFLICT (${c.reason}): ${c.path}`, 'err');
+        log('The stash entry is kept in case you need it again. Resolve the conflicts, then add the files.', 'err');
+        selectTab('add');
+      }
+    });
   }
   function useAsResetTarget(sha) {
     $('resetTarget').value = sha;
@@ -2346,9 +2634,34 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
           el('div', { class: 'meta' }, `${c.author.name} <${c.author.email}> · ${when.toLocaleString()} (${relTime(c.author.time)})`),
           el('div', { class: 'meta mono' }, `commit ${c.sha}`, c.parents.length ? ` · parent${c.parents.length > 1 ? 's' : ''} ${c.parents.map(short).join(' ')}` : ' · root commit'),
           body ? el('details', {}, el('summary', {}, 'message body'), el('pre', {}, body)) : null,
-          el('div', { class: 'row' }, el('button', { class: 'small', onclick: () => useAsResetTarget(c.sha) }, 'reset to this commit…')));
+          el('div', { class: 'row' },
+            c.parents.length ? el('button', { class: 'small', onclick: () => showDiff(c.sha + '^1', c.sha) }, 'show changes') : null,
+            el('button', { class: 'small', onclick: () => useAsResetTarget(c.sha) }, 'reset to this commit…')));
       }) : [el('li', { class: 'empty' }, 'no commits yet')]));
       $('logMore').hidden = !more;
+    } else if (state.tab === 'diff') {
+      const mode = $('diffMode').value;
+      $('diffRevs').hidden = mode !== 'commits';
+      const opts = { unstaged: { from: 'index', to: 'worktree' }, staged: { from: 'HEAD', to: 'index' }, head: { from: 'HEAD', to: 'worktree' } }[mode]
+        || { from: $('diffA').value.trim() || 'HEAD', to: $('diffB').value.trim() || 'HEAD' };
+      let d;
+      try { d = await repo.diff(opts); } catch (e) {
+        $('diffSummary').replaceChildren(el('div', { class: 'notice err' }, e.message));
+        $('diffOut').hidden = true;
+        return;
+      }
+      const counts = { A: 0, M: 0, D: 0, U: 0 };
+      for (const f of d.files) counts[f.status]++;
+      const names = { A: 'added', M: 'modified', D: 'deleted', U: 'unmerged' };
+      $('diffSummary').replaceChildren(el('div', { class: 'notice' }, d.files.length
+        ? `${d.files.length} file${d.files.length === 1 ? '' : 's'} changed: ` + Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `${n} ${names[k]}`).join(', ')
+        : 'no differences'));
+      $('diffOut').hidden = !d.files.length;
+      $('diffOut').replaceChildren(...d.text.replace(/\n$/, '').split('\n').map((l) => el('span', {
+        class: l.startsWith('diff --git') || l.startsWith('* Unmerged') ? 'd-file' : l.startsWith('@@') ? 'd-hunk'
+          : /^(index |--- |\+\+\+ |new file|deleted file|old mode|new mode|Binary files|\\ )/.test(l) ? 'd-meta'
+            : l[0] === '+' ? 'd-add' : l[0] === '-' ? 'd-del' : '',
+      }, l || ' ')));
     } else if (state.tab === 'tree') {
       const { rows, total } = await repo.graph({ limit: state.graphLimit });
       $('graph').replaceChildren(...(rows.length ? renderGraph(rows) : [el('div', { class: 'empty' }, 'no commits yet')]));
@@ -2449,6 +2762,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
     });
   };
   $('abortBtn').onclick = () => run('git merge --abort', async () => { await state.repo.abortMerge(); log('Merge aborted.', 'ok'); });
+  $('diffMode').onchange = () => run(null, async () => {});
+  $('diffRefresh').onclick = () => run(null, async () => {});
+  for (const id of ['diffA', 'diffB']) $(id).onkeydown = (e) => { if (e.key === 'Enter') run(null, async () => {}); };
+  $('stashBtn').onclick = () => {
+    const message = $('stashMsg').value.trim();
+    const who = ident();
+    run(message ? `git stash push -m ${JSON.stringify(message)}` : 'git stash', async () => {
+      const r = await state.repo.stashPush({ message, ident: who });
+      if (r.result === 'no-changes') log('No local changes to save', 'ok');
+      else { log(`Saved working directory and index state ${r.message}`, 'ok'); $('stashMsg').value = ''; }
+    });
+  };
   $('logFrom').onchange = () => { state.logLimit = 50; run(null, async () => {}); };
   $('logRefresh').onclick = () => run(null, async () => {});
   $('logMore').onclick = () => { state.logLimit += 100; run(null, async () => {}); };

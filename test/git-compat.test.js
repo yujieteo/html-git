@@ -577,3 +577,154 @@ test('rebase: clean replay, conflicts with continue/skip/abort, and state real g
   assert.equal(git(dir, 'symbolic-ref', '--short', 'HEAD').trim(), 'topic');
   fsck(dir);
 });
+
+test('diff output matches git diff, and patches apply with git apply', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  const body = (n, tag = '') => Array.from({ length: n }, (_, i) => `  line ${i + 1}${tag}`).join('\n') + '\n';
+  write('code.js', 'function alpha() {\n' + body(20) + '}\n\nfunction beta() {\n' + body(20, ' b') + '}\n');
+  write('gone.txt', 'bye\n');
+  write('nonl.txt', 'no newline');
+  write('bin.dat', Buffer.from([0, 1, 2, 3]));
+  write('same.txt', 'same\n');
+  await repo.add(['code.js', 'gone.txt', 'nonl.txt', 'bin.dat', 'same.txt']);
+  const c1 = await repo.commit({ message: 'one', ident: ME, date: tick() });
+
+  const lines = fs.readFileSync(path.join(dir, 'code.js'), 'utf8').split('\n');
+  lines[10] = '  line 10 changed';
+  lines[16] = '  line 16 changed';
+  lines.splice(35, 1);
+  lines.splice(40, 0, '  inserted in beta');
+  write('code.js', lines.join('\n'));
+  write('nonl.txt', 'no newline\n');
+  write('bin.dat', Buffer.from([0, 9, 9]));
+  fs.rmSync(path.join(dir, 'gone.txt'));
+  write('staged-new.txt', 'brand\nnew\n');
+  await repo.add(['staged-new.txt', 'gone.txt']);
+  write('staged-new.txt', 'brand\nnewer\n');
+  write('empty.txt', '');
+  await repo.add(['empty.txt']);
+
+  const same = async (opts, ...args) => assert.equal((await repo.diff(opts)).text, git(dir, 'diff', ...args), `git diff ${args.join(' ')}`);
+  await same({}, );
+  await same({ from: 'HEAD', to: 'index' }, '--cached');
+  await same({ from: 'HEAD', to: 'worktree' }, 'HEAD');
+  assert.match((await repo.diff()).text, /@@ -8,13 \+8,13 @@ function alpha\(\) \{\n/);
+  assert.deepEqual((await repo.diff({ from: 'HEAD', to: 'worktree' })).files.map((f) => f.status + ' ' + f.path),
+    ['M bin.dat', 'M code.js', 'A empty.txt', 'D gone.txt', 'M nonl.txt', 'A staged-new.txt']);
+
+  await repo.add(['code.js', 'nonl.txt', 'bin.dat', 'staged-new.txt']);
+  const c2 = await repo.commit({ message: 'two', ident: ME, date: tick() });
+  await same({ from: c1.sha, to: c2.sha }, c1.sha, c2.sha);
+  await same({ from: 'HEAD~1', to: 'HEAD' }, 'HEAD~1', 'HEAD');
+  assert.equal((await repo.diff()).text, '');
+
+  // Random edits: our patch must apply cleanly with git apply and reproduce the file.
+  let seed = 7;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const words = ['a', 'b', 'c', '}', '', 'return x;', 'if (y) {'];
+  let text = Array.from({ length: 300 }, () => words[rnd(words.length)]).join('\n') + '\n';
+  write('rand.txt', text);
+  await repo.add(['rand.txt']);
+  await repo.commit({ message: 'rand', ident: ME, date: tick() });
+  for (let round = 0; round < 5; round++) {
+    const ls = text.split('\n');
+    for (let k = 0; k < 25; k++) {
+      const at = rnd(ls.length), op = rnd(3);
+      if (op === 0) ls.splice(at, 1); else if (op === 1) ls.splice(at, 0, words[rnd(words.length)]); else ls[at] = words[rnd(words.length)];
+    }
+    text = ls.join('\n');
+    write('rand.txt', text);
+    const patch = path.join(tmpRoot, `r${n}-${round}.patch`);
+    fs.writeFileSync(patch, (await repo.diff()).text);
+    git(dir, 'apply', '--cached', '--check', patch);
+    git(dir, 'apply', '--cached', patch);
+    assert.equal(git(dir, 'diff'), '', 'index now matches the working tree');
+    assert.equal((await repo.diff()).text, '');
+  }
+});
+
+test('stash push, list, apply, pop and drop are compatible with git stash', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  write('f.txt', 'a\nb\n'); write('del.txt', 'd\n'); write('keep.txt', 'k\n');
+  await repo.add(['f.txt', 'del.txt', 'keep.txt']);
+  const c1 = await repo.commit({ message: 'init', ident: ME, date: tick() });
+
+  assert.equal((await repo.stashPush({ ident: ME })).result, 'no-changes');
+  write('f.txt', 'a\nb\nc\n');
+  fs.rmSync(path.join(dir, 'del.txt'));
+  write('new.txt', 'n\n');
+  await repo.add(['new.txt']);
+  write('untracked.txt', 'u\n');
+  let r = await repo.stashPush({ ident: ME, date: tick() });
+  assert.equal(r.result, 'saved');
+  assert.equal(r.message, `WIP on main: ${c1.sha.slice(0, 7)} init`);
+  assert.equal(git(dir, 'status', '--porcelain'), '?? untracked.txt\n', 'tracked changes are put away, untracked files stay');
+  assert.equal(git(dir, 'stash', 'list'), `stash@{0}: WIP on main: ${c1.sha.slice(0, 7)} init\n`);
+  assert.equal(git(dir, 'rev-parse', 'stash^1').trim(), c1.sha);
+  assert.equal(git(dir, 'log', '-1', '--format=%s', 'stash^2').trim(), `index on main: ${c1.sha.slice(0, 7)} init`);
+  assert.equal(git(dir, 'show', 'stash:f.txt'), 'a\nb\nc\n');
+  assert.equal(git(dir, 'show', 'stash^2:new.txt'), 'n\n');
+  assert.match(git(dir, 'stash', 'show', '--name-status'), /M\tf\.txt/);
+  fsck(dir);
+
+  // Real git applies our stash; we apply git's stash.
+  git(dir, 'stash', 'apply');
+  assert.equal(git(dir, 'status', '--porcelain'), ' D del.txt\n M f.txt\nA  new.txt\n?? untracked.txt\n');
+  git(dir, 'stash', 'push', '-q', '-m', 'from real git');
+  let list = await repo.stashList();
+  assert.deepEqual(list.map((e) => `${e.index}: ${e.message}`), ['0: On main: from real git', `1: WIP on main: ${c1.sha.slice(0, 7)} init`]);
+  assert.equal(await repo.resolveRev('stash@{1}'), git(dir, 'rev-parse', 'stash@{1}').trim());
+  r = await repo.stashApply(0, { pop: true });
+  assert.equal(r.result, 'applied');
+  assert.equal(git(dir, 'status', '--porcelain'), ' D del.txt\n M f.txt\nA  new.txt\n?? untracked.txt\n');
+  assert.equal(git(dir, 'stash', 'list'), `stash@{0}: WIP on main: ${c1.sha.slice(0, 7)} init\n`);
+
+  // Stash with a message, then drop the older entry; git still reads the list.
+  r = await repo.stashPush({ message: 'second', ident: ME, date: tick() });
+  assert.equal(r.message, 'On main: second');
+  assert.equal(git(dir, 'stash', 'list'), `stash@{0}: On main: second\nstash@{1}: WIP on main: ${c1.sha.slice(0, 7)} init\n`);
+  const second = git(dir, 'rev-parse', 'stash@{0}').trim();
+  await repo.stashDrop(1);
+  assert.equal(git(dir, 'stash', 'list'), 'stash@{0}: On main: second\n');
+  assert.equal(git(dir, 'rev-parse', 'refs/stash').trim(), second);
+  git(dir, 'stash', 'drop', '-q');
+  assert.deepEqual(await repo.stashList(), []);
+
+  // Conflicting apply: markers like git's, the stash is kept.
+  write('f.txt', 'a\nSTASHED\n');
+  await repo.stashPush({ ident: ME, date: tick() });
+  write('f.txt', 'a\nCOMMITTED\n');
+  await repo.add(['f.txt']);
+  await repo.commit({ message: 'change f', ident: ME, date: tick() });
+  r = await repo.stashApply(0, { pop: true });
+  assert.equal(r.result, 'conflict');
+  assert.equal(fs.readFileSync(path.join(dir, 'f.txt'), 'utf8'), 'a\n<<<<<<< Updated upstream\nCOMMITTED\n=======\nSTASHED\n>>>>>>> Stashed changes\n');
+  assert.equal(git(dir, 'status', '--porcelain'), 'UU f.txt\n?? untracked.txt\n');
+  assert.equal((await repo.stashList()).length, 1, 'kept after a conflict');
+  await repo.reset('HEAD', { mode: 'hard' });
+  await repo.stashDrop(0);
+  assert.equal(fs.existsSync(path.join(dir, '.git/refs/stash')), false);
+  fsck(dir);
+});
+
+test('stash apply works next to unrelated local changes, like git', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  write('a.txt', 'a\n'); write('b.txt', 'b\n');
+  await repo.add(['a.txt', 'b.txt']);
+  await repo.commit({ message: 'init', ident: ME, date: tick() });
+  write('a.txt', 'a stashed\n');
+  await repo.stashPush({ ident: ME, date: tick() });
+  write('b.txt', 'b local\n');
+  await repo.add(['b.txt']);
+  write('b.txt', 'b local, edited again\n');
+  const r = await repo.stashApply(0);
+  assert.equal(r.result, 'applied');
+  assert.equal(git(dir, 'status', '--porcelain'), ' M a.txt\nMM b.txt\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'b.txt'), 'utf8'), 'b local, edited again\n');
+  git(dir, 'checkout', '--', 'a.txt');
+  write('a.txt', 'a local\n');
+  await assert.rejects(repo.stashApply(0), /would be overwritten:\n {2}a\.txt/);
+});
