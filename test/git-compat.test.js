@@ -739,3 +739,18 @@ test('packed ofs-delta and ref-delta objects match real git', async () => {
     assert.ok(deltaCount > 0, `the fixture uses ${offset ? 'ofs' : 'ref'}-delta objects`);
   }
 });
+
+test('restore refuses repository metadata paths before any write', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  write('safe', 'keep\n'); await repo.add(['safe']);
+  const head = (await repo.commit({ message: 'safe', ident: ME, date: tick() })).sha;
+  const blob = await repo.writeObject('blob', G.enc('bad config\n'));
+  const tree = await repo.writeTreeFromMap(new Map([['.git/config', { mode: 0o100644, sha: blob }]]));
+  const commit = await repo.writeObject('commit', G.enc(`tree ${tree}\nparent ${head}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\nunsafe\n`));
+  const before = fs.readFileSync(path.join(dir, '.git/config'));
+  await assert.rejects(repo.restore(commit), /unsafe path/);
+  assert.deepEqual(fs.readFileSync(path.join(dir, '.git/config')), before);
+  assert.equal(fs.readFileSync(path.join(dir, 'safe'), 'utf8'), 'keep\n');
+  assert.equal(git(dir, 'status', '--porcelain'), '');
+});
