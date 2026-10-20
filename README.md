@@ -21,7 +21,6 @@ ordinary command-line git.
 | **merge**  | Fast-forwards when possible. Otherwise it does a three-way merge: file by file, then line by line (diff3). If there are conflicts it stops and leaves standard git state: conflict markers in the files, index stages 1, 2 and 3, and `MERGE_HEAD` and `MERGE_MSG`. Resolve the files, stage them with **add**, then **commit**, or click **merge --abort**. |
 | **rebase** | Replays the current branch's commits on top of another branch, like `git rebase <branch>`. It keeps each commit's author, flattens merge commits, and drops commits whose changes are already upstream. When the target is ahead it fast-forwards. On a conflict it stops with the same state real git uses (`.git/rebase-merge`, `REBASE_HEAD`, detached `HEAD`, conflict markers, index stages). Resolve the files, stage them with **add**, then click **rebase --continue**, **--skip** or **--abort**. Command-line `git rebase --continue` or `--abort` also works on that state. |
 | **reset**  | Moves the current branch to another commit, like `git reset --soft`, `--mixed` or `--hard`. It saves the old position as `ORIG_HEAD`, and `--mixed` and `--hard` also clear an unfinished merge. It also unstages selected files (`git reset -- <file>`). The target can be a branch, tag, full or abbreviated commit id, and can use `~N` and `^N` (for example `HEAD~2` or `main^2`). |
-| **push**   | Pushes a branch to an HTTPS remote over the git smart HTTP protocol (`git-receive-pack`) with a token. html-git builds the packfile itself. Only fast-forward pushes are allowed. After a successful push it saves the URL as `origin` and updates `refs/remotes/origin/<branch>`. |
 
 Nothing else is implemented on purpose: no clone, fetch, pull, interactive
 rebase or creating tags.
@@ -47,30 +46,16 @@ html-git needs the File System Access API directory picker
 Chrome won't let you pick some system folders, such as your home directory or
 the root of a drive. Pick a project folder instead.
 
-## Pushing and CORS
-
-A web page can only talk to servers that send CORS headers. GitHub, GitLab,
-Bitbucket and most other hosts don't send them, so a push to those hosts has to
-go through a CORS proxy. Put the proxy's base URL in the **CORS proxy** field.
-html-git then sends requests to `<proxy>/<remote URL without https://>`, which is
-the convention [cors.isomorphic-git.org](https://cors.isomorphic-git.org) uses.
-The proxy can see your token, so only use one you trust or run your own. A
-self-hosted git server that sends CORS headers works without a proxy.
-
-For GitHub, use a personal access token with write access to the repository as
-the password. You can leave the username empty.
-
 ## Compatibility
 
 Everything is implemented from scratch in `index.html`:
 
 - **SHA-1** for object ids.
 - **zlib deflate and inflate** (RFC 1950 and 1951) for loose objects and packs.
-- **Objects:** loose objects, and reading packfiles (`.idx` versions 1 and 2, including `ofs-delta` and `ref-delta`).
+- **Objects:** loose objects, and reading packfiles (`.idx` version 2, including `ofs-delta` and `ref-delta`).
 - **Refs:** loose refs and `packed-refs`.
 - **Index:** reads index versions 2 and 3, writes version 2.
 - **Reflogs.**
-- **Push:** pkt-line and receive-pack, plus packfile generation.
 
 So html-git works both on repositories it created and on existing repositories
 that real git has packed and garbage-collected.
@@ -81,16 +66,14 @@ directories. It covers init, add, commit, diff, stash, branch, merge
 (fast-forward, clean three-way, conflict then resolve, and abort), reset (soft,
 mixed, hard and unstaging), rebase (clean, dropped duplicates, conflict then
 continue, skip and abort, plus real git continuing or aborting a rebase
-html-git stopped), log, the commit graph and push, and checks every result with
+html-git stopped), log, the commit graph, and checks every result with
 real git: `git fsck --full --strict`, `git status --porcelain`,
 `git log --all --graph`, `git rev-list`, `git cat-file`, `git write-tree`,
 `git ls-files`, `git merge-base`, `git reflog` and `git rev-parse`. Diff output
 must match `git diff`, `git diff --cached`, `git diff HEAD` and `git diff A B`
 byte for byte, and patches for random edits must apply with `git apply`.
 Stashes must work in both directions: git applies html-git's stashes and
-html-git applies git's. For push, it serves a bare repository
-through `git http-backend` over HTTP with `receive.fsckObjects` turned on.
-
+html-git applies git's.
 ## Limits
 
 - **File modes.** Browsers can't read or set the executable bit or symlinks. New
@@ -116,8 +99,6 @@ through `git http-backend` over HTTP with `receive.fsckObjects` turned on.
 - **Stash** has no `--include-untracked`, `--keep-index` or `--index`, and a
   stash with conflicts must be resolved by hand (add the files, then drop the
   stash).
-- **Push** only fast-forwards. html-git can't fetch, so if the remote has commits
-  you don't have locally, the push is rejected.
 - **Unsupported repository layouts:** index version 4, split index, linked
   worktrees and submodules (where `.git` is a file), SHA-256 repositories, and
   `.git` directories outside the chosen folder.

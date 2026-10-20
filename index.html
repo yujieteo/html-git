@@ -147,7 +147,7 @@ fieldset.modes small { color: var(--muted); }
 <body>
 <header class="top">
   <div class="brand">html<span>-git</span></div>
-  <div class="tagline">git init · add · commit · diff · stash · log · branch · merge · rebase · reset · push — in one HTML file, no libraries</div>
+  <div class="tagline">git init · add · commit · diff · stash · log · branch · merge · rebase · reset — in one HTML file, no libraries</div>
   <div class="spacer"></div>
   <span class="folder" id="folderName"></span>
   <button class="primary" id="openBtn">Open folder…</button>
@@ -163,7 +163,7 @@ fieldset.modes small { color: var(--muted); }
   <p>Pick a folder on your disk. html-git reads and writes its real <code>.git</code> directory, so everything it does can be
     inspected, continued or undone with ordinary command-line git.</p>
   <p>Supported: <b>init</b>, <b>add</b>, <b>commit -m</b>, <b>branch</b> (create / list / switch), <b>merge</b> (fast-forward and three-way),
-    <b>diff</b>, <b>stash</b>, <b>rebase</b>, <b>reset</b> (soft / mixed / hard, and unstaging), <b>log</b>, a commit <b>tree</b> graph of all branches and <b>push</b> (smart HTTP). Works from <code>file://</code> in desktop Chrome, Edge and other Chromium browsers.</p>
+    <b>diff</b>, <b>stash</b>, <b>rebase</b>, <b>reset</b> (soft / mixed / hard, and unstaging), <b>log</b>, a commit <b>tree</b> graph of all branches. Works from <code>file://</code> in desktop Chrome, Edge and other Chromium browsers.</p>
   <div class="row"><button class="primary" id="openBtn2">Open folder…</button></div>
 </section>
 
@@ -191,7 +191,6 @@ fieldset.modes small { color: var(--muted); }
       <button role="tab" data-tab="merge"><span class="cmd">merge</span></button>
       <button role="tab" data-tab="rebase"><span class="cmd">rebase</span></button>
       <button role="tab" data-tab="reset"><span class="cmd">reset</span></button>
-      <button role="tab" data-tab="push"><span class="cmd">push</span></button>
     </nav>
 
     <section class="panel" data-panel="init" hidden>
@@ -337,20 +336,7 @@ fieldset.modes small { color: var(--muted); }
       <div class="row"><button id="unstageBtn">git reset -- selected</button></div>
     </section>
 
-    <section class="panel" data-panel="push" hidden>
-      <p>Upload a branch to an HTTPS remote with the git smart HTTP protocol (<code>git push</code>). Only fast-forward pushes are allowed.</p>
-      <div class="grid2">
-        <label class="field"><span>Remote URL (origin)</span><input type="url" id="remoteUrl" placeholder="https://github.com/you/repo.git"></label>
-        <label class="field"><span>Branch</span><select id="pushBranch"></select></label>
-        <label class="field"><span>Username (optional)</span><input type="text" id="pushUser" placeholder="x-access-token" autocomplete="username"></label>
-        <label class="field"><span>Token / password</span><input type="password" id="pushToken" autocomplete="current-password"></label>
-      </div>
-      <label class="field"><span>CORS proxy (optional)</span><input type="url" id="corsProxy" placeholder="https://cors.isomorphic-git.org"></label>
-      <p class="notice">Browsers only let a page talk to servers that send CORS headers. GitHub, GitLab and most hosts do <b>not</b>,
-        so pushing to them from a web page needs a CORS proxy; the request becomes <code>&lt;proxy&gt;/&lt;remote URL without https://&gt;</code>.
-        A proxy sees your token, so only use one you trust or run your own. Self-hosted servers that allow CORS work directly.</p>
-      <div class="row"><button class="primary" id="pushBtn">git push</button></div>
-    </section>
+
   </div>
 </main>
 
@@ -361,7 +347,7 @@ fieldset.modes small { color: var(--muted); }
 
 <script id="git-core">
 /* html-git core: a dependency-free implementation of the git object model,
- * index, refs, merging and the smart HTTP push protocol. It touches storage only
+ * index, refs and merging. It touches storage only
  * through a small async filesystem interface so it runs unchanged in the browser
  * (File System Access API) and in Node (tests). */
 const GitCore = (() => {
@@ -736,13 +722,11 @@ const GitCore = (() => {
   }
   function parsePackIndex(buf) {
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const v2 = dv.getUint32(0) === 0xff744f63;
-    if (v2 && dv.getUint32(4) !== 2) throw new Error('unsupported pack index version');
-    const fan = v2 ? 8 : 0;
+    if (dv.getUint32(0) !== 0xff744f63 || dv.getUint32(4) !== 2) throw new Error('unsupported pack index version');
+    const fan = 8;
     const n = dv.getUint32(fan + 255 * 4);
-    const shaAt = v2 ? (i) => fan + 1024 + i * 20 : (i) => fan + 1024 + i * 24 + 4;
+    const shaAt = (i) => fan + 1024 + i * 20;
     const offAt = (i) => {
-      if (!v2) return dv.getUint32(fan + 1024 + i * 24);
       const base = fan + 1024 + n * 24;
       const o = dv.getUint32(base + i * 4);
       if (!(o & 0x80000000)) return o;
@@ -1055,31 +1039,6 @@ const GitCore = (() => {
     const n = Math.min(bytes.length, 8000);
     for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
     try { tdStrict.decode(bytes); return false; } catch (e) { return true; }
-  }
-
-  // ---------- pkt-line ----------
-  function pktLine(s) {
-    const b = typeof s === 'string' ? enc(s) : s;
-    return concatBytes([enc((b.length + 4).toString(16).padStart(4, '0')), b]);
-  }
-  function parsePktLines(buf) {
-    const lines = [];
-    let p = 0;
-    while (p + 4 <= buf.length) {
-      const len = parseInt(dec(buf.subarray(p, p + 4)), 16);
-      if (Number.isNaN(len)) throw new Error('invalid pkt-line from server');
-      if (len === 0) { lines.push(null); p += 4; continue; }
-      if (len < 4) { p += 4; continue; }
-      lines.push(buf.subarray(p + 4, p + len));
-      p += len;
-    }
-    return lines;
-  }
-  function b64(s) {
-    const bytes = enc(s);
-    let bin = '';
-    for (const x of bytes) bin += String.fromCharCode(x);
-    return btoa(bin);
   }
 
   const BRANCH_RE_BAD = /(^[-.\/])|(\/\.)|(\.\.)|([\x00-\x20~^:?*\[\\\x7f])|(@\{)|(\/\/)|(\.lock$)|(\.lock\/)|([\/.]$)|(^@$)/;
@@ -2164,131 +2123,12 @@ const GitCore = (() => {
       return { rows, total: commits.size };
     }
 
-    // --- push (smart HTTP, receive-pack) ---
-    async collectObjects(tips, exclude = new Set()) {
-      const out = [];
-      const seen = new Set(exclude);
-      const walkTree = async (sha) => {
-        if (seen.has(sha)) return;
-        seen.add(sha);
-        out.push(sha);
-        for (const e of parseTree(await this.readTyped(sha, 'tree'))) {
-          if (e.mode === MODE.GITLINK) continue;
-          if (e.mode === MODE.TREE) await walkTree(e.sha);
-          else if (!seen.has(e.sha)) { seen.add(e.sha); out.push(e.sha); }
-        }
-      };
-      const stack = [...tips];
-      while (stack.length) {
-        const sha = stack.pop();
-        if (seen.has(sha)) continue;
-        seen.add(sha);
-        out.push(sha);
-        const c = await this.readCommit(sha);
-        await walkTree(c.tree);
-        for (const p of c.parents) stack.push(p);
-      }
-      return out;
-    }
-    async buildPack(shas) {
-      const parts = [];
-      const head = new Uint8Array(12);
-      head.set(enc('PACK'));
-      const hv = new DataView(head.buffer);
-      hv.setUint32(4, 2); hv.setUint32(8, shas.length);
-      parts.push(head);
-      const typeNum = { commit: 1, tree: 2, blob: 3, tag: 4 };
-      for (const sha of shas) {
-        const { type, body } = await this.readObject(sha);
-        let size = body.length;
-        const hdr = [(typeNum[type] << 4) | (size & 15)];
-        size = Math.floor(size / 16);
-        while (size > 0) { hdr[hdr.length - 1] |= 0x80; hdr.push(size & 0x7f); size = Math.floor(size / 128); }
-        parts.push(new Uint8Array(hdr), deflate(body));
-      }
-      const pack = concatBytes(parts);
-      return concatBytes([pack, sha1(pack)]);
-    }
-    async push({ url, branch, username, token, corsProxy, remote = 'origin', fetch: fetchImpl }) {
-      const doFetch = fetchImpl || globalThis.fetch.bind(globalThis);
-      if (!/^https?:\/\//i.test(url || '')) throw new Error('remote URL must start with https:// (or http://)');
-      const localSha = await this.resolveRef('refs/heads/' + branch);
-      if (!localSha) throw new Error(`branch '${branch}' has no commits`);
-      let endpoint = url.replace(/\/+$/, '');
-      if (corsProxy) endpoint = corsProxy.replace(/\/+$/, '') + '/' + endpoint.replace(/^https?:\/\//i, '');
-      const headers = {};
-      if (token) headers.Authorization = 'Basic ' + b64(`${username || 'x-access-token'}:${token}`);
-      let res;
-      try {
-        res = await doFetch(endpoint + '/info/refs?service=git-receive-pack', { headers });
-      } catch (e) {
-        throw new Error(`could not reach ${endpoint} (${e.message}). If the server does not send CORS headers, set a CORS proxy.`);
-      }
-      if (res.status === 401 || res.status === 403) throw new Error(`authentication failed (HTTP ${res.status}); check the username/token`);
-      if (!res.ok) throw new Error(`remote answered HTTP ${res.status} for info/refs`);
-      const ctype = res.headers.get('content-type') || '';
-      if (!ctype.includes('application/x-git-receive-pack-advertisement')) throw new Error('remote does not speak the git smart HTTP protocol (unexpected content-type ' + (ctype || 'none') + ')');
-      const lines = parsePktLines(new Uint8Array(await res.arrayBuffer()));
-      const refs = new Map();
-      let caps = [];
-      let sawService = false;
-      for (const l of lines) {
-        if (l === null) continue;
-        let s = dec(l);
-        if (s.startsWith('# service=')) { sawService = true; continue; }
-        const nul = s.indexOf('\0');
-        if (nul >= 0) { caps = s.slice(nul + 1).trim().split(' '); s = s.slice(0, nul); }
-        const [sha, name] = s.trim().split(' ');
-        if (isSha(sha) && name && name !== 'capabilities^{}') refs.set(name, sha);
-      }
-      if (!sawService) throw new Error('unexpected info/refs response from remote');
-      const ref = 'refs/heads/' + branch;
-      const remoteSha = refs.get(ref) || ZERO_SHA;
-      const trackRef = `refs/remotes/${remote}/${branch}`;
-      if (remoteSha === localSha) {
-        await this.fs.writeFile('.git/' + trackRef, localSha + '\n');
-        return { result: 'up-to-date', sha: localSha };
-      }
-      if (remoteSha !== ZERO_SHA) {
-        if (!(await this.hasObject(remoteSha))) throw new Error(`rejected: the remote ${ref} contains commits you do not have locally (fetch/pull is not supported by html-git)`);
-        if (!(await this.isAncestor(remoteSha, localSha))) throw new Error(`rejected: non-fast-forward push to ${ref} (the remote has diverged)`);
-      }
-      const haves = [];
-      for (const sha of new Set(refs.values())) {
-        if ((await this.hasObject(sha)) && (await this.readObject(sha)).type === 'commit') haves.push(sha);
-      }
-      const exclude = new Set(await this.collectObjects(haves));
-      const objects = await this.collectObjects([localSha], exclude);
-      const pack = await this.buildPack(objects);
-      const want = ['report-status', 'agent=html-git/1.0'].filter((c) => c.startsWith('agent=') || caps.includes(c));
-      const body = concatBytes([pktLine(`${remoteSha} ${localSha} ${ref}\0${want.join(' ')}`), enc('0000'), pack]);
-      let post;
-      try {
-        post = await doFetch(endpoint + '/git-receive-pack', {
-          method: 'POST',
-          headers: { ...headers, 'Content-Type': 'application/x-git-receive-pack-request', Accept: 'application/x-git-receive-pack-result' },
-          body,
-        });
-      } catch (e) {
-        throw new Error(`upload to ${endpoint} failed (${e.message})`);
-      }
-      if (!post.ok) throw new Error(`remote answered HTTP ${post.status} for git-receive-pack`);
-      const report = parsePktLines(new Uint8Array(await post.arrayBuffer())).filter(Boolean).map((l) => dec(l).replace(/\n$/, ''));
-      if (caps.includes('report-status')) {
-        const unpack = report.find((l) => l.startsWith('unpack '));
-        if (unpack && unpack !== 'unpack ok') throw new Error(`remote failed to unpack: ${unpack.slice(7)}`);
-        const ng = report.find((l) => l.startsWith('ng '));
-        if (ng) throw new Error(`remote rejected: ${ng.slice(3)}`);
-        if (!report.some((l) => l === `ok ${ref}`)) throw new Error(`remote did not confirm the update:\n${report.join('\n') || '(empty response)'}`);
-      }
-      await this.fs.writeFile('.git/' + trackRef, localSha + '\n');
-      return { result: remoteSha === ZERO_SHA ? 'new-branch' : 'updated', from: remoteSha, sha: localSha, objects: objects.length, report };
-    }
+
   }
 
   return {
     Repo, sha1, sha1Hex, inflate, deflate, adler32, hashObject, parseIndex, serializeIndex, parseTree, serializeTree,
-    parseCommit, merge3, parseIgnore, isIgnored, configGet, configSet, applyDelta, pktLine, parsePktLines,
+    parseCommit, merge3, parseIgnore, isIgnored, configGet, configSet, applyDelta,
     validBranchName, cleanMessage, diffHunks, filePatch, ZERO_SHA, enc, dec, toHex, fromHex,
   };
 })();
@@ -2575,11 +2415,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
     if (stashes.length) info.push(el('dt', {}, 'Stashes'), el('dd', {}, String(stashes.length)));
     $('repoInfo').replaceChildren(...info);
 
-    // push
-    const prevPush = $('pushBranch').value;
-    $('pushBranch').replaceChildren(...state.branches.map((b) => el('option', { value: b.name }, b.name)));
-    $('pushBranch').value = state.branches.some((b) => b.name === prevPush) ? prevPush : (head.branch || '');
-    if (!$('remoteUrl').value && remote) $('remoteUrl').value = remote;
+
   }
 
   function refPill(label) {
@@ -2822,23 +2658,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
       for (const d of await state.repo.resetPaths(paths)) log(`${d.action === 'reset' ? 'unstaged' : 'no longer tracking (file kept)'} ${d.path}`);
     });
   };
-  $('pushBtn').onclick = () => {
-    const url = $('remoteUrl').value.trim();
-    const branch = $('pushBranch').value;
-    const corsProxy = $('corsProxy').value.trim();
-    store.set('corsProxy', corsProxy);
-    run(`git push origin ${branch}`, async () => {
-      const r = await state.repo.push({ url, branch, username: $('pushUser').value.trim(), token: $('pushToken').value, corsProxy });
-      if ((await state.repo.getConfig('remote', 'origin', 'url')) !== url) {
-        await state.repo.setConfig('remote', 'origin', 'url', url);
-        await state.repo.setConfig('remote', 'origin', 'fetch', '+refs/heads/*:refs/remotes/origin/*');
-      }
-      if (r.result === 'up-to-date') log('Everything up-to-date', 'ok');
-      else log(`To ${url}\n   ${r.result === 'new-branch' ? '* [new branch]     ' : short(r.from) + '..' + short(r.sha) + '  '} ${branch} -> ${branch}  (${r.objects} objects)`, 'ok');
-    });
-  };
-
-  $('corsProxy').value = store.get('corsProxy') || '';
   if (!window.showDirectoryPicker) $('unsupported').hidden = false;
   selectTab(store.get('tab') || 'add');
   window.htmlGit = { GitCore, openHandle, HandleFS };

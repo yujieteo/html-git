@@ -8,8 +8,7 @@ const zlib = require('node:zlib');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const http = require('node:http');
-const { execFileSync, spawn } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { loadCore, NodeFS } = require('./load-core');
 
 const G = loadCore();
@@ -274,99 +273,6 @@ test('works on repositories created and packed by real git', async () => {
   assert.equal(await fresh.resolveRev(headSha.slice(0, 8)), headSha);
   assert.equal(await fresh.resolveRev(headSha.slice(0, 8) + '^2'), git(dir, 'rev-parse', 'HEAD^2').trim());
   assert.equal((await fresh.graph()).total, Number(git(dir, 'rev-list', '--all', '--count').trim()));
-});
-
-// Minimal CGI bridge so `git http-backend` serves a bare repository over smart HTTP.
-function startGitHttpServer(projectRoot) {
-  const server = http.createServer((req, res) => {
-    const u = new URL(req.url, 'http://localhost');
-    if (req.headers.authorization !== 'Basic ' + Buffer.from('tester:s3cret').toString('base64')) {
-      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="git"' });
-      res.end();
-      return;
-    }
-    const child = spawn('git', ['http-backend'], {
-      env: {
-        ...gitEnv, GIT_PROJECT_ROOT: projectRoot, GIT_HTTP_EXPORT_ALL: '1', PATH_INFO: decodeURIComponent(u.pathname),
-        REQUEST_METHOD: req.method, QUERY_STRING: u.search.slice(1), CONTENT_TYPE: req.headers['content-type'] || '',
-        REMOTE_USER: 'tester', REMOTE_ADDR: '127.0.0.1', GATEWAY_INTERFACE: 'CGI/1.1',
-      },
-    });
-    req.pipe(child.stdin);
-    const chunks = [];
-    child.stdout.on('data', (c) => chunks.push(c));
-    child.on('close', () => {
-      const out = Buffer.concat(chunks);
-      const sep = out.indexOf('\r\n\r\n');
-      const headers = {};
-      let status = 200;
-      for (const line of out.subarray(0, sep).toString().split('\r\n')) {
-        const i = line.indexOf(':');
-        const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
-        if (k.toLowerCase() === 'status') status = parseInt(v, 10);
-        else headers[k] = v;
-      }
-      res.writeHead(status, headers);
-      res.end(out.subarray(sep + 4));
-    });
-  });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
-}
-
-test('push over smart HTTP to a bare repository served by git http-backend', async () => {
-  const bareRoot = path.join(tmpRoot, 'srv');
-  fs.mkdirSync(bareRoot);
-  git(bareRoot, 'init', '-q', '--bare', 'remote.git');
-  const bare = path.join(bareRoot, 'remote.git');
-  git(bare, 'config', 'http.receivepack', 'true');
-  git(bare, 'config', 'receive.fsckObjects', 'true');
-  const server = await startGitHttpServer(bareRoot);
-  const url = `http://127.0.0.1:${server.address().port}/remote.git`;
-  try {
-    const { dir, repo, write } = newRepoDir();
-    await repo.init('main');
-    write('hello.txt', 'hello over http\n');
-    write('big.bin', crypto.randomBytes(200000));
-    await repo.add(['hello.txt', 'big.bin']);
-    const c1 = await repo.commit({ message: 'first', ident: ME, date: tick() });
-
-    await assert.rejects(repo.push({ url, branch: 'main', username: 'tester', token: 'wrong' }), /authentication failed/);
-    let r = await repo.push({ url, branch: 'main', username: 'tester', token: 's3cret' });
-    assert.equal(r.result, 'new-branch');
-    assert.equal(git(bare, 'rev-parse', 'main').trim(), c1.sha);
-    assert.equal(git(dir, 'rev-parse', 'refs/remotes/origin/main').trim(), c1.sha);
-
-    write('hello.txt', 'hello again\n');
-    await repo.add(['hello.txt']);
-    const c2 = await repo.commit({ message: 'second', ident: ME, date: tick() });
-    await repo.createBranch('dev', { ident: ME });
-    r = await repo.push({ url, branch: 'main', username: 'tester', token: 's3cret' });
-    assert.equal(r.result, 'updated');
-    assert.equal(r.objects, 3, 'only the new commit, tree and blob are sent');
-    r = await repo.push({ url, branch: 'main', username: 'tester', token: 's3cret' });
-    assert.equal(r.result, 'up-to-date');
-    r = await repo.push({ url, branch: 'dev', username: 'tester', token: 's3cret' });
-    assert.equal(r.result, 'new-branch');
-    assert.equal(r.objects, 0);
-    assert.equal(git(bare, 'rev-parse', 'main').trim(), c2.sha);
-    assert.equal(git(bare, 'rev-parse', 'dev').trim(), c2.sha);
-    assert.equal(git(bare, 'cat-file', '-p', 'main:hello.txt'), 'hello again\n');
-    fsck(bare);
-
-    // A remote that moved ahead (commit we do not have) is refused client-side.
-    const other = path.join(tmpRoot, 'other');
-    git(tmpRoot, 'clone', '-q', bare, other);
-    fs.writeFileSync(path.join(other, 'x.txt'), 'x\n');
-    git(other, 'add', 'x.txt');
-    git(other, 'commit', '-q', '-m', 'from elsewhere');
-    git(other, 'push', '-q', 'origin', 'main');
-    write('hello.txt', 'diverged\n');
-    await repo.add(['hello.txt']);
-    await repo.commit({ message: 'third', ident: ME, date: tick() });
-    await assert.rejects(repo.push({ url, branch: 'main', username: 'tester', token: 's3cret' }), /rejected/);
-  } finally {
-    server.close();
-  }
 });
 
 test('log, rev syntax and the commit graph agree with real git', async () => {
