@@ -705,3 +705,37 @@ test('restore keeps unrelated local edits and handles tracked file-directory cha
   await assert.rejects(new G.Repo(new NodeFS(dir)).restore(old), /untracked/);
   assert.equal(fs.readFileSync(path.join(dir, 'shape/untracked'), 'utf8'), 'keep\n');
 });
+
+test('wasm rejects truncated zlib streams, bad checksums and invalid deltas', () => {
+  const stream = zlib.deflateSync(Buffer.from('contents\n'.repeat(100)));
+  for (const n of [0, 1, 2, 3, stream.length - 1]) assert.throws(() => G.inflate(stream.subarray(0, n)), /zlib/);
+  const bad = Buffer.from(stream); bad[bad.length - 1] ^= 1;
+  assert.throws(() => G.inflate(bad), /checksum/);
+  const base = G.enc('hello');
+  assert.equal(G.dec(G.applyDelta(base, Uint8Array.from([5, 6, 0x90, 5, 1, 33]))), 'hello!');
+  for (const bytes of [[6, 0], [5, 1, 0], [5, 1, 0x91, 9, 1], [5, 1, 2, 65], [5, 2, 1, 65], [5, 0, 128]]) {
+    assert.throws(() => G.applyDelta(base, Uint8Array.from(bytes)), /delta/);
+  }
+});
+
+test('packed ofs-delta and ref-delta objects match real git', async () => {
+  const { dir, write } = newRepoDir();
+  git(dir, 'init', '-q');
+  const text = Array.from({ length: 1000 }, (_, i) => `line ${i} has stable text\n`).join('');
+  for (let i = 0; i < 12; i++) { write('file', text + `revision ${i}\n`); git(dir, 'add', 'file'); git(dir, 'commit', '-q', '-m', `revision ${i}`); }
+  for (const offset of [true, false]) {
+    git(dir, '-c', `repack.useDeltaBaseOffset=${offset}`, 'repack', '-adf');
+    const repo = new G.Repo(new NodeFS(dir));
+    const objects = git(dir, 'rev-list', '--objects', '--all').trim().split('\n').map((line) => line.split(' ')[0]);
+    let deltaCount = 0;
+    for (const sha of objects) {
+      const hit = await repo.findPacked(sha);
+      const actual = await repo.readObject(sha);
+      const expected = execFileSync('git', ['cat-file', actual.type, sha], { cwd: dir, env: gitEnv });
+      assert.deepEqual(Buffer.from(actual.body), expected);
+      const type = (hit.pack.data[hit.off] >> 4) & 7;
+      if (type === (offset ? 6 : 7)) deltaCount++;
+    }
+    assert.ok(deltaCount > 0, `the fixture uses ${offset ? 'ofs' : 'ref'}-delta objects`);
+  }
+});
