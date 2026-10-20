@@ -1762,6 +1762,66 @@ const GitCore = (() => {
       }
       return out;
     }
+    // Restore content without moving HEAD. Complete all safety checks before writes.
+    async restore(rev, paths = null) {
+      const sha = await this.resolveRev(rev);
+      if (!sha) throw new Error(`'${rev}' does not name a commit`);
+      const source = await this.commitMap(sha);
+      const head = await this.head();
+      const base = await this.commitMap(head.sha);
+      const index = await this.readIndex();
+      const current = new Map(index.filter((e) => !e.stage).map((e) => [e.path, e]));
+      const known = new Set([...base.keys(), ...index.map((e) => e.path), ...source.keys()]);
+      const selected = paths === null ? [...known] : [...new Set(paths)];
+      if (!selected.length) return { sha, paths: [] };
+      for (const p of selected) if (!known.has(p)) throw new Error(`Unknown tracked path: ${p}`);
+      const same = (a, b) => !a && !b || a && b && a.sha === b.sha && a.mode === b.mode;
+      const changed = [], content = new Map();
+      for (const p of selected) {
+        const target = source.get(p), old = current.get(p), original = base.get(p);
+        const bytes = await this.fs.readFile(p);
+        const work = bytes === null ? null : { sha: hashObject('blob', bytes), mode: old ? old.mode : MODE.FILE };
+        if (same(old, target) && same(work, target)) continue;
+        if (index.some((e) => e.path === p && e.stage) || !same(old, original) || !same(work, old)) {
+          throw new Error(`Cannot restore: ${p} has uncommitted changes. Commit or stash them first. No files changed.`);
+        }
+        if (target && ![MODE.FILE, MODE.EXEC].includes(target.mode)) throw new Error(`Cannot restore this file mode: ${p}`);
+        changed.push(p);
+        if (target) content.set(p, await this.readTyped(target.sha, 'blob'));
+      }
+      const removed = new Set(changed.filter((p) => !source.has(p)));
+      const checkDirectory = async (p) => {
+        for (const entry of await this.fs.readdir(p) || []) {
+          const child = p + '/' + entry.name;
+          if (entry.kind === 'directory') await checkDirectory(child);
+          else if (!removed.has(child)) throw new Error(`Cannot restore: untracked file would be overwritten: ${child}`);
+        }
+      };
+      for (const p of content.keys()) {
+        const parts = p.split('/');
+        for (let i = 1; i < parts.length; i++) {
+          const parent = parts.slice(0, i).join('/');
+          const st = await this.fs.stat(parent);
+          if (st && st.kind === 'file' && !removed.has(parent)) throw new Error(`Cannot restore: file blocks path: ${parent}`);
+        }
+        const st = await this.fs.stat(p);
+        if (st && st.kind === 'directory') await checkDirectory(p);
+      }
+      for (const p of removed) { await this.fs.remove(p); await this.pruneEmptyDirs(p); }
+      for (const [p, bytes] of content) {
+        if ((await this.fs.stat(p))?.kind === 'directory') await this.fs.remove(p);
+        await this.fs.writeFile(p, bytes);
+      }
+      const changedSet = new Set(changed);
+      const next = index.filter((e) => !changedSet.has(e.path));
+      for (const p of changed) {
+        const target = source.get(p);
+        if (target) next.push(indexEntry(p, target.sha, target.mode, await this.fs.stat(p)));
+      }
+      await this.writeIndex(next);
+      return { sha, paths: changed };
+    }
+
     async reset(rev, { mode = 'mixed', ident, date } = {}) {
       if (!['soft', 'mixed', 'hard'].includes(mode)) throw new Error(`unknown reset mode '${mode}'`);
       const target = await this.resolveRev(rev);
@@ -2518,6 +2578,19 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
       }
     });
   }
+  async function restoreCommit(sha, paths = null) {
+    await run(`git restore --source=${sha} --staged --worktree`, async () => {
+      const result = await state.repo.restore(sha, paths);
+      log(`Restored ${result.paths.length} paths. HEAD stays at the current commit. Use commit to record the restored code.`, 'ok');
+    });
+  }
+  async function restoreFilePicker(sha, container) {
+    const source = await state.repo.commitMap(sha);
+    const index = await state.repo.readIndex();
+    const paths = [...new Set([...source.keys(), ...index.map((e) => e.path)])].sort();
+    const select = el('select', { 'aria-label': 'File to restore', class: 'mono' }, ...paths.map((p) => el('option', { value: p }, p)));
+    container.replaceChildren(select, el('button', { class: 'small', onclick: () => restoreCommit(sha, [select.value]) }, 'Restore file'));
+  }
   async function renderHistoryTab() {
     const repo = state.repo;
     const head = state.status && state.status.head;
@@ -2532,13 +2605,16 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
         const [subject, ...rest] = c.message.replace(/\n+$/, '').split('\n');
         const body = rest.join('\n').replace(/^\n+/, '');
         const when = new Date(c.author.time * 1000);
+        const picker = el('div', { class: 'row' });
         return el('li', {},
           el('div', {}, el('span', { class: 'mono' }, short(c.sha) + ' '), ...(deco.get(c.sha) || []).map(refPill), el('span', { class: 'subject' }, subject)),
           el('div', { class: 'meta' }, `${c.author.name} <${c.author.email}> · ${when.toLocaleString()} (${relTime(c.author.time)})`),
           el('div', { class: 'meta mono' }, `commit ${c.sha}`, c.parents.length ? ` · parent${c.parents.length > 1 ? 's' : ''} ${c.parents.map(short).join(' ')}` : ' · root commit'),
           body ? el('details', {}, el('summary', {}, 'message body'), el('pre', {}, body)) : null,
           el('div', { class: 'row' },
-            c.parents.length ? el('button', { class: 'small', onclick: () => showDiff(c.sha + '^1', c.sha) }, 'show changes') : null));
+            c.parents.length ? el('button', { class: 'small', onclick: () => showDiff(c.sha + '^1', c.sha) }, 'show changes') : null,
+            el('button', { class: 'small', onclick: () => restoreCommit(c.sha) }, 'Restore'),
+            el('button', { class: 'small', onclick: () => restoreFilePicker(c.sha, picker).catch((e) => log(e.message, 'err')) }, 'Choose file…')), picker);
       }) : [el('li', { class: 'empty' }, 'no commits yet')]));
       $('logMore').hidden = !more;
     } else if (state.tab === 'diff') {

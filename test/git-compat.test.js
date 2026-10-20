@@ -634,3 +634,74 @@ test('stash apply works next to unrelated local changes, like git', async () => 
   write('a.txt', 'a local\n');
   await assert.rejects(repo.stashApply(0), /would be overwritten:\n {2}a\.txt/);
 });
+
+test('restore whole commits and individual files matches git without moving HEAD', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  write('a.txt', 'old\n'); write('removed.txt', 'return\n'); write('nested/file', 'old nested\n');
+  await repo.add(['a.txt', 'removed.txt', 'nested/file']);
+  const old = (await repo.commit({ message: 'old', ident: ME, date: tick() })).sha;
+  write('a.txt', 'new\n'); fs.unlinkSync(path.join(dir, 'removed.txt')); write('added.txt', 'remove\n');
+  await repo.add(['a.txt', 'removed.txt', 'added.txt']);
+  const head = (await repo.commit({ message: 'new', ident: ME, date: tick() })).sha;
+  write('untracked.txt', 'keep\n');
+  for (const paths of [null, ['a.txt'], ['added.txt'], ['removed.txt']]) {
+    const copy = fs.mkdtempSync(path.join(tmpRoot, 'restore-'));
+    fs.cpSync(dir, copy, { recursive: true });
+    const fresh = new G.Repo(new NodeFS(copy));
+    await fresh.restore(old, paths);
+    const expected = fs.mkdtempSync(path.join(tmpRoot, 'expected-'));
+    fs.cpSync(dir, expected, { recursive: true });
+    git(expected, 'restore', `--source=${old}`, '--staged', '--worktree', '--', ...(paths || [':/']));
+    assert.equal(git(copy, 'status', '--porcelain'), git(expected, 'status', '--porcelain'));
+    assert.equal(git(copy, 'write-tree'), git(expected, 'write-tree'));
+    assert.equal(git(copy, 'rev-parse', 'HEAD').trim(), head);
+    assert.equal(fs.readFileSync(path.join(copy, 'untracked.txt'), 'utf8'), 'keep\n');
+    for (const file of git(expected, 'ls-files', '-z').split('\0').filter(Boolean)) {
+      assert.deepEqual(fs.readFileSync(path.join(copy, file)), fs.readFileSync(path.join(expected, file)));
+    }
+  }
+});
+
+test('restore refuses dirty paths and untracked collisions before any write', async () => {
+  for (const kind of ['unstaged', 'staged', 'deleted', 'untracked', 'ignored']) {
+    const { dir, repo, write } = newRepoDir();
+    await repo.init('main');
+    write('a', 'old\n'); write('z', 'old\n'); write('collision', 'old\n');
+    await repo.add(['a', 'z', 'collision']);
+    const old = (await repo.commit({ message: 'old', ident: ME, date: tick() })).sha;
+    write('a', 'new\n'); write('z', 'new\n'); fs.unlinkSync(path.join(dir, 'collision'));
+    await repo.add(['a', 'z', 'collision']);
+    await repo.commit({ message: 'new', ident: ME, date: tick() });
+    if (kind === 'deleted') fs.unlinkSync(path.join(dir, 'z'));
+    else if (['untracked', 'ignored'].includes(kind)) {
+      write('collision', 'keep\n');
+      if (kind === 'ignored') write('.git/info/exclude', 'collision\n');
+    } else { write('z', 'dirty\n'); if (kind === 'staged') await repo.add(['z']); }
+    const before = git(dir, 'status', '--porcelain');
+    const index = fs.readFileSync(path.join(dir, '.git/index'));
+    await assert.rejects(repo.restore(old), /Cannot restore/);
+    assert.equal(git(dir, 'status', '--porcelain'), before);
+    assert.deepEqual(fs.readFileSync(path.join(dir, '.git/index')), index);
+    assert.equal(fs.readFileSync(path.join(dir, 'a'), 'utf8'), 'new\n');
+  }
+});
+
+test('restore keeps unrelated local edits and handles tracked file-directory changes', async () => {
+  const { dir, repo, write } = newRepoDir();
+  await repo.init('main');
+  write('shape', 'file\n'); write('other', 'base\n');
+  await repo.add(['shape', 'other']);
+  const old = (await repo.commit({ message: 'file', ident: ME, date: tick() })).sha;
+  fs.unlinkSync(path.join(dir, 'shape')); write('shape/child', 'child\n');
+  await repo.add(['shape', 'shape/child']);
+  const latest = (await repo.commit({ message: 'directory', ident: ME, date: tick() })).sha;
+  write('other', 'dirty\n');
+  await repo.restore(old, ['shape', 'shape/child']);
+  assert.equal(fs.readFileSync(path.join(dir, 'shape'), 'utf8'), 'file\n');
+  assert.equal(fs.readFileSync(path.join(dir, 'other'), 'utf8'), 'dirty\n');
+  git(dir, 'reset', '--hard', latest);
+  write('shape/untracked', 'keep\n');
+  await assert.rejects(new G.Repo(new NodeFS(dir)).restore(old), /untracked/);
+  assert.equal(fs.readFileSync(path.join(dir, 'shape/untracked'), 'utf8'), 'keep\n');
+});
