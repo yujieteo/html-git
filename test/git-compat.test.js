@@ -740,6 +740,26 @@ test('packed ofs-delta and ref-delta objects match real git', async () => {
   }
 });
 
+test('bounded caches evict objects and still return correct bytes', async () => {
+  const { dir, write } = newRepoDir();
+  git(dir, 'init', '-q');
+  const text = Array.from({ length: 1000 }, (_, i) => `line ${i} has stable text\n`).join('');
+  for (let i = 0; i < 12; i++) { write('file', text + `revision ${i}\n`); git(dir, 'add', 'file'); git(dir, 'commit', '-q', '-m', `revision ${i}`); }
+  git(dir, 'repack', '-adf');
+  const repo = new G.Repo(new NodeFS(dir));
+  repo.cache = new G.ObjectCache(30000);
+  repo.packed = new G.ObjectCache(30000);
+  const objects = git(dir, 'rev-list', '--objects', '--all').trim().split('\n').map((line) => line.split(' ')[0]);
+  for (let round = 0; round < 2; round++) {
+    for (const sha of objects) {
+      const actual = await repo.readObject(sha);
+      assert.deepEqual(Buffer.from(actual.body), execFileSync('git', ['cat-file', actual.type, sha], { cwd: dir, env: gitEnv }));
+    }
+  }
+  assert.ok(repo.cache.bytes <= 30000 && repo.packed.bytes <= 30000);
+  assert.ok(repo.cache.map.size < objects.length);
+});
+
 test('restore refuses repository metadata paths before any write', async () => {
   const { dir, repo, write } = newRepoDir();
   await repo.init('main');

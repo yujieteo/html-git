@@ -864,10 +864,32 @@ const GitCore = (() => {
   function validBranchName(name) { return !!name && !BRANCH_RE_BAD.test(name); }
 
   // ---------- repository ----------
+  const CACHE_BYTES = 32 * 1024 * 1024;
+  class ObjectCache {
+    constructor(limit = CACHE_BYTES) { this.limit = limit; this.bytes = 0; this.map = new Map(); }
+    has(key) { return this.map.has(key); }
+    get(key) {
+      const obj = this.map.get(key);
+      if (obj) { this.map.delete(key); this.map.set(key, obj); }
+      return obj;
+    }
+    set(key, obj) {
+      const old = this.map.get(key);
+      if (old) { this.bytes -= old.body.length; this.map.delete(key); }
+      this.map.set(key, obj);
+      this.bytes += obj.body.length;
+      for (const [k, o] of this.map) {
+        if (this.bytes <= this.limit || k === key) break;
+        this.bytes -= o.body.length;
+        this.map.delete(k);
+      }
+    }
+  }
   class Repo {
     constructor(fs) {
       this.fs = fs;
-      this.cache = new Map();
+      this.cache = new ObjectCache();
+      this.packed = new ObjectCache();
       this.packs = null;
     }
 
@@ -916,10 +938,11 @@ const GitCore = (() => {
       return null;
     }
     async readPacked(pack, offset) {
-      if (!pack.objects) pack.objects = new Map();
-      if (pack.objects.has(offset)) return pack.objects.get(offset);
+      const key = pack.path + ':' + offset;
+      const hit = this.packed.get(key);
+      if (hit) return hit;
       const object = await this.decodePacked(pack, offset);
-      pack.objects.set(offset, object);
+      this.packed.set(key, object);
       return object;
     }
     async decodePacked(pack, offset) {
@@ -2013,7 +2036,7 @@ const GitCore = (() => {
   }
 
   return {
-    Repo, sha1, sha1Hex, inflate, deflate, adler32, hashObject, parseIndex, serializeIndex, parseTree, serializeTree,
+    Repo, ObjectCache, sha1, sha1Hex, inflate, deflate, adler32, hashObject, parseIndex, serializeIndex, parseTree, serializeTree,
     parseCommit, merge3, parseIgnore, isIgnored, configGet, applyDelta,
     validBranchName, cleanMessage, diffHunks, filePatch, ZERO_SHA, enc, dec, toHex, fromHex,
   };
