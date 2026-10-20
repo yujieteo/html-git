@@ -12,7 +12,7 @@
   --border: #d9dde3;
   --text: #1c2330;
   --muted: #5d6778;
-  --accent: #d2491f;
+  --accent: var(--text);
   --accent-text: #ffffff;
   --ok: #1d7a46;
   --warn: #9a6400;
@@ -20,7 +20,6 @@
   --add: #1d7a46;
   --mod: #9a6400;
   --del: #b42318;
-  --g0: #d2491f; --g1: #2563c9; --g2: #1d7a46; --g3: #8e44ad; --g4: #9a6400; --g5: #0f8a8a;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color-scheme: light;
@@ -33,15 +32,14 @@
     --border: #313947;
     --text: #e4e8ee;
     --muted: #97a1b2;
-    --accent: #f06a3f;
-    --accent-text: #16110f;
+    --accent: var(--text);
+    --accent-text: var(--panel);
     --ok: #4cc584;
     --warn: #e3b341;
     --err: #ff7b72;
     --add: #4cc584;
     --mod: #e3b341;
     --del: #ff7b72;
-    --g0: #f06a3f; --g1: #6ea8ff; --g2: #4cc584; --g3: #c38bf0; --g4: #e3b341; --g5: #4fd1d1;
     color-scheme: dark;
   }
 }
@@ -86,10 +84,6 @@ dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .mono { font-family: var(--mono); font-size: 12.5px; }
 .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; }
 .pill.warn { color: var(--warn); border-color: var(--warn); }
-ol.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-ol.log li { display: grid; gap: 1px; font-size: 13px; min-width: 0; }
-ol.log .msg { overflow-wrap: anywhere; }
-ol.log .meta { color: var(--muted); font-size: 12px; }
 nav.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin: -14px -14px 14px; padding: 8px 8px 0; }
 nav.tabs button { border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; background: none; padding: 7px 14px; margin-bottom: -1px; }
 nav.tabs button[aria-selected=true] { background: var(--panel); border-color: var(--border); font-weight: 600; color: var(--accent); }
@@ -117,10 +111,10 @@ ul.plain li .name { font-family: var(--mono); overflow-wrap: anywhere; min-width
 .commits .meta { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 .commits pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
 .commits details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
-.ref { display: inline-block; padding: 0 6px; margin-right: 4px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel-2); font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--g2); }
+.ref { display: inline-block; padding: 0 6px; margin-right: 4px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel-2); font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--muted); }
 .ref.head { color: var(--accent); border-color: var(--accent); }
-.ref.tag { color: var(--g4); }
-.ref.remote { color: var(--g1); }
+.ref.tag { color: var(--muted); }
+.ref.remote { color: var(--muted); }
 .graph { overflow-x: auto; }
 .graph .grow { display: flex; align-items: center; height: 24px; min-width: 0; white-space: nowrap; font-size: 13px; }
 .graph svg { flex: none; display: block; }
@@ -131,7 +125,7 @@ pre.diff { margin: 0; padding: 10px 12px; background: var(--panel-2); border: 1p
 pre.diff span { display: block; white-space: pre; min-width: max-content; }
 pre.diff .d-add { color: var(--add); background: color-mix(in srgb, var(--add) 10%, transparent); }
 pre.diff .d-del { color: var(--del); background: color-mix(in srgb, var(--del) 10%, transparent); }
-pre.diff .d-hunk { color: var(--g1); }
+pre.diff .d-hunk { color: var(--muted); }
 pre.diff .d-file { font-weight: 700; margin-top: 10px; }
 pre.diff .d-file:first-child { margin-top: 0; }
 pre.diff .d-meta { color: var(--muted); }
@@ -149,6 +143,7 @@ fieldset.modes small { color: var(--muted); }
   <div class="brand">html<span>-git</span></div>
   <div class="tagline">git init · add · commit · diff · stash · log · branch · merge · rebase · reset — in one HTML file, no libraries</div>
   <div class="spacer"></div>
+  <button id="refreshBtn">Refresh</button>
   <span class="folder" id="folderName"></span>
   <button class="primary" id="openBtn">Open folder…</button>
 </header>
@@ -164,7 +159,6 @@ fieldset.modes small { color: var(--muted); }
     inspected, continued or undone with ordinary command-line git.</p>
   <p>Supported: <b>init</b>, <b>add</b>, <b>commit -m</b>, <b>branch</b> (create / list / switch), <b>merge</b> (fast-forward and three-way),
     <b>diff</b>, <b>stash</b>, <b>rebase</b>, <b>reset</b> (soft / mixed / hard, and unstaging), <b>log</b>, a commit <b>tree</b> graph of all branches. Works from <code>file://</code> in desktop Chrome, Edge and other Chromium browsers.</p>
-  <div class="row"><button class="primary" id="openBtn2">Open folder…</button></div>
 </section>
 
 <main class="layout" id="app" hidden>
@@ -172,10 +166,6 @@ fieldset.modes small { color: var(--muted); }
     <div class="card">
       <h2>Repository</h2>
       <dl class="kv" id="repoInfo"></dl>
-    </div>
-    <div class="card">
-      <h2>History</h2>
-      <ol class="log" id="history"></ol>
     </div>
   </aside>
   <div class="card">
@@ -203,15 +193,11 @@ fieldset.modes small { color: var(--muted); }
     <section class="panel" data-panel="add" hidden>
       <p>Select files to stage (<code>git add</code>). Deleted files are staged as removals.</p>
       <div class="row">
-        <button id="selAll" class="small">Select all</button>
-        <button id="selNone" class="small">Select none</button>
-        <label class="row" style="gap:4px"><input type="checkbox" id="showAll"> show unchanged tracked files</label>
         <div class="spacer"></div>
-        <button id="refreshBtn" class="small">Refresh</button>
       </div>
       <table class="files">
         <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"></colgroup>
-        <thead><tr><th></th><th>XY</th><th>Path</th><th>State</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="selectFiles" aria-label="Select all files"></th><th>XY</th><th>Path</th><th>State</th></tr></thead>
         <tbody id="fileRows"></tbody>
       </table>
       <div class="row"><button class="primary" id="addBtn">git add selected</button></div>
@@ -239,7 +225,6 @@ fieldset.modes small { color: var(--muted); }
           <option value="head">all changes: HEAD → files (git diff HEAD)</option>
           <option value="commits">between two commits (git diff A B)</option>
         </select>
-        <button id="diffRefresh" class="small">Refresh</button>
       </div>
       <div class="grid2" id="diffRevs" hidden>
         <label class="field"><span>From (A)</span><input type="text" id="diffA" value="HEAD~1" spellcheck="false"></label>
@@ -267,7 +252,6 @@ fieldset.modes small { color: var(--muted); }
       <p>Commit history, newest first (<code>git log</code>).</p>
       <div class="row">
         <select id="logFrom" style="flex:1; min-width:160px"></select>
-        <button id="logRefresh" class="small">Refresh</button>
       </div>
       <ol class="commits" id="logList"></ol>
       <div class="row"><button id="logMore" class="small" hidden>Show more</button></div>
@@ -2301,10 +2285,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
           : el('div', { class: 'notice' }, 'This folder is not a git repository yet.'));
     if (!isRepo) {
       $('repoInfo').replaceChildren(el('dt', {}, 'State'), el('dd', {}, 'not a git repository'));
-      $('history').replaceChildren(el('li', { class: 'empty' }, 'no history'));
       return;
     }
-    const st = await repo.status({ all: $('showAll').checked });
+    const st = await repo.status();
     state.status = st;
     state.branches = await repo.branches();
     const head = st.head;
@@ -2323,11 +2306,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
     const remote = await repo.getConfig('remote', 'origin', 'url');
     if (remote) info.push(el('dt', {}, 'origin'), el('dd', { class: 'mono' }, remote));
     $('repoInfo').replaceChildren(...info);
-
-    const commits = head.sha ? await repo.log(head.sha, 25) : [];
-    $('history').replaceChildren(...(commits.length ? commits.map((c) => el('li', {},
-      el('span', { class: 'msg' }, el('span', { class: 'mono' }, short(c.sha) + ' '), c.message.split('\n')[0], c.parents.length > 1 ? el('span', { class: 'pill' }, ' merge') : null),
-      el('span', { class: 'meta' }, `${c.author.name} · ${relTime(c.author.time)}`))) : [el('li', { class: 'empty' }, 'no commits yet')]));
 
     // add
     const rows = st.entries.map((e) => {
@@ -2445,11 +2423,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
       }
     });
   }
-  function useAsResetTarget(sha) {
-    $('resetTarget').value = sha;
-    selectTab('reset');
-    $('resetTarget').focus();
-  }
   async function renderHistoryTab() {
     const repo = state.repo;
     const head = state.status && state.status.head;
@@ -2470,8 +2443,7 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
           el('div', { class: 'meta mono' }, `commit ${c.sha}`, c.parents.length ? ` · parent${c.parents.length > 1 ? 's' : ''} ${c.parents.map(short).join(' ')}` : ' · root commit'),
           body ? el('details', {}, el('summary', {}, 'message body'), el('pre', {}, body)) : null,
           el('div', { class: 'row' },
-            c.parents.length ? el('button', { class: 'small', onclick: () => showDiff(c.sha + '^1', c.sha) }, 'show changes') : null,
-            el('button', { class: 'small', onclick: () => useAsResetTarget(c.sha) }, 'reset to this commit…')));
+            c.parents.length ? el('button', { class: 'small', onclick: () => showDiff(c.sha + '^1', c.sha) }, 'show changes') : null));
       }) : [el('li', { class: 'empty' }, 'no commits yet')]));
       $('logMore').hidden = !more;
     } else if (state.tab === 'diff') {
@@ -2505,17 +2477,13 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
   }
   // Draws each row's slice of the graph as its own small SVG; the slices line up into one picture.
   function renderGraph(rows) {
-    const NS = 'http://www.w3.org/2000/svg', W = 14, H = 24, R = 4, COLORS = 6;
-    const colorOf = new Map();
-    let nextColor = 0;
+    const NS = 'http://www.w3.org/2000/svg', W = 14, H = 24, R = 4;
     const x = (i) => W / 2 + i * W;
-    const color = (sha) => `var(--g${colorOf.get(sha)})`;
+    const color = (sha) => 'var(--muted)';
     const svgEl = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
     const curve = (x1, y1, x2, y2, sha) => svgEl('path', { d: `M${x1} ${y1} C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`, fill: 'none', stroke: color(sha), 'stroke-width': 2 });
     const width = Math.max(...rows.map((r) => Math.max(r.before.length, r.after.length, r.col + 1)));
     return rows.map((r) => {
-      if (!colorOf.has(r.sha)) colorOf.set(r.sha, nextColor++ % COLORS);
-      r.parents.forEach((p, i) => { if (!colorOf.has(p)) colorOf.set(p, i === 0 ? colorOf.get(r.sha) : nextColor++ % COLORS); });
       const svg = svgEl('svg', { width: width * W, height: H, viewBox: `0 0 ${width * W} ${H}`, 'aria-hidden': 'true' });
       r.before.forEach((t, j) => {
         if (t === r.sha) svg.append(curve(x(j), 0, x(r.col), H / 2, t));
@@ -2538,12 +2506,9 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
 
   // ---------- wiring ----------
   $('openBtn').onclick = pickFolder;
-  $('openBtn2').onclick = pickFolder;
   for (const b of $('tabs').querySelectorAll('button')) b.onclick = () => selectTab(b.dataset.tab);
   $('refreshBtn').onclick = () => run(null, async () => {});
-  $('showAll').onchange = () => run(null, async () => {});
-  $('selAll').onclick = () => { for (const c of $('fileRows').querySelectorAll('input[type=checkbox]')) c.checked = true; };
-  $('selNone').onclick = () => { for (const c of $('fileRows').querySelectorAll('input[type=checkbox]')) c.checked = false; };
+  $('selectFiles').onchange = (event) => { for (const c of $('fileRows').querySelectorAll('input[type=checkbox]')) c.checked = event.target.checked; };
 
   $('initBtn').onclick = () => {
     const branch = $('initBranch').value.trim() || 'main';
@@ -2598,7 +2563,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
   };
   $('abortBtn').onclick = () => run('git merge --abort', async () => { await state.repo.abortMerge(); log('Merge aborted.', 'ok'); });
   $('diffMode').onchange = () => run(null, async () => {});
-  $('diffRefresh').onclick = () => run(null, async () => {});
   for (const id of ['diffA', 'diffB']) $(id).onkeydown = (e) => { if (e.key === 'Enter') run(null, async () => {}); };
   $('stashBtn').onclick = () => {
     const message = $('stashMsg').value.trim();
@@ -2610,7 +2574,6 @@ if (typeof module !== 'undefined' && module.exports) module.exports = GitCore;
     });
   };
   $('logFrom').onchange = () => { state.logLimit = 50; run(null, async () => {}); };
-  $('logRefresh').onclick = () => run(null, async () => {});
   $('logMore').onclick = () => { state.logLimit += 100; run(null, async () => {}); };
   $('graphMore').onclick = () => { state.graphLimit += 300; run(null, async () => {}); };
   const logRebase = (r, onto) => {
